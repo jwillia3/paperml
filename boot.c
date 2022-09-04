@@ -24,13 +24,13 @@ typedef enum {
     TEOF, TLPAREN, TRPAREN, TLBRACE, TRBRACE, TCOMMA, TBACK,
     TSEMI, TINT, TCHAR, TSTRING, TID, TEQUAL, TFN, TARROW, TLET,
     TREC, TAND, TIN, TCASE, TBAR, TIF, TTHEN, TELSE, TTYPING,
-    TINFIXL, TINFIXR, TDATATYPE, TMORE, TDEREF,
+    TINFIXL, TINFIXR, TDATATYPE, TMORE, TDEREF, TWHERE,
 } toktype;
 
 char *tokname[] = {"end of file", "(", ")", "[", "]", ",", "`",
     ";", "int", "char", "string", "id", "=", "fn", "->", "let",
     "rec", "and", "in", "case", "|", "if", "then", "else", "::",
-    "infixl", "infixr", "datatype", "--", "!", 0 };
+    "infixl", "infixr", "datatype", "--", "!", "where", 0 };
 
 struct value {
     enum { NIL, INT, CHAR, STRING, TUPLE, CONS, DATA, CLOSURE, NOVAL, } form;
@@ -78,9 +78,9 @@ struct node {
         struct { value val; type *type; } lit;
         nodes *tup;
         struct { char *id; int index; };
-        struct { node *lhs, *rhs; };
+        struct { node *lhs, *rhs; int ndrop; };
         struct { char *id, *par; node *body; } fn;
-        struct { nodes *decs; node *body; } let;
+        struct { nodes *decs; node *body; int ndrop; } let;
         struct { node *subject; nodes *rules; } _case;
         struct { node *a, *b, *c; } _if;
         struct { node *body; type *type; } typing;
@@ -109,24 +109,27 @@ struct fnrules {
     fnrules *next;
 };
 
-#define emit(X) (program[ec] = X, ec++)
+#define emit(X) (code[ec] = X, ec++)
 #define emiti(X, Y) (emit(X), emit(Y))
 
-typedef enum opcode { IHLT, ILIT, ITUP, INIL, ICONS, IDAT, IVAR,
+typedef enum opcode { IHLT, ILIT, ITUP, INIL, ICONS, IVAR,
     ICLOS, IRET, IAPP, ITAIL, IPOP, ILET, IREC, IDROP, IJMP,
-    IBRF, IPEQ, IPTUP, IPCON, IPDAT, ILAST, IPAT, IDER,
+    IBRF, IPEQ, IPTUP, IPCON, IPDAT, ILAST, IPAT, IDREF,
 } opcode;
 struct { char *name; bool arg; } instructions[] = {
     {"HLT",0}, {"LIT",1}, {"TUP",1}, {"NIL",0}, {"CONS",0},
-    {"DAT",1}, {"VAR",1}, {"CLOS",1}, {"RET",0}, {"APP",0},
-    {"TAIL",0}, {"POP",0}, {"LET",0}, {"REC",1}, {"DROP",1},
-    {"JMP",1}, {"BRF",1}, {"PEQ",1}, {"PTUP",0}, {"PCON",0},
-    {"PDAT",1}, {"LAST",0}, {"PAT",1}, {"DER",0},
+    {"VAR",1}, {"CLOS",1}, {"RET",0}, {"APP",0}, {"TAIL",0},
+    {"POP",0}, {"LET",0}, {"REC",1}, {"DROP",1}, {"JMP",1},
+    {"BRF",1}, {"PEQ",1}, {"PTUP",0}, {"PCON",0}, {"PDAT",1},
+    {"LAST",0}, {"PAT",1}, {"DREF",0},
 };
 #define NINSTR ((int) (sizeof instructions / sizeof *instructions))
 
-typedef enum native_op { NADD=1, NSUB, NMUL, NDIV, NREM, NLT, NGT,
-    NLE, NGE, NEQ, NNE, NPR, NSET,
+// Native op numbers.
+// These must not start at 0 since that is how closures distinguished.
+typedef enum native_op { NCONS=1, NADD, NSUB, NMUL, NDIV, NREM,
+    NLT, NGT, NLE, NGE, NEQ, NNE, NPR, NSET, NSIZE, NCHAT,
+    NSUBS, NFINDS, NJOIN, NIMPLODE, NORD, NCHR, NRDF, NEXIT,
 } native_op;
 
 
@@ -144,17 +147,21 @@ char        tokbuf[65536];
 string      *tokstr;
 infix       *infixes;
 infix       backquote_infix = {"`", 9, 10, NULL};
-type        *booltype, *inttype, *chartype, *stringtype;
+type        *booltype, *inttype, *chartype, *strtype;
 types       *nongenerics;
 senv        *all_types;
 senv        *constrs;
-char        *list_id, *cons_id, *ref_id, *ignore_id;
+char        *list_id, *cons_id, *ref_id, *ignore_id, *and_id, *or_id;
+char        *some_id, *opt_id;
 value       nil = {NIL}, noval = {NOVAL, {0}}, unit, _true, _false;
-int         program[8 * 1024 * 1024];
+value       empty_str, none;
+int         *code;
+location    *codeloc;
 int         ec; // `c` that we're emitting at.
 value       constants[1024 * 1024];
 int         nconstants;
 int         stack_size = 1024 * 1024;
+int         code_size = 8 * 1024 * 1024;
 
 
 
@@ -162,6 +169,36 @@ int         stack_size = 1024 * 1024;
 
 #define new(TYPE, ...)\
     ((TYPE*) memcpy(malloc(sizeof (TYPE)), &(TYPE){__VA_ARGS__}, sizeof (TYPE)))
+
+_Noreturn void _fatal(location loc, char *msg, va_list ap) {
+    printf("boot: error %s:%d:%d: ",
+        loc.name? loc.name: "?", loc.line, loc.col);
+    vprintf(msg, ap);
+    putchar('\n');
+    exit(1);
+}
+
+_Noreturn void syntax(char *msg, ...) {
+    va_list ap;
+    va_start(ap, msg);
+    _fatal(sloc, msg, ap);
+}
+
+_Noreturn void semantic(node *e, char *msg, ...) {
+    va_list ap;
+    va_start(ap, msg);
+    _fatal(e->loc, msg, ap);
+}
+
+_Noreturn void fatal(location loc, char *msg, ...) {
+    va_list ap;
+    va_start(ap, msg);
+    _fatal(loc, msg, ap);
+}
+
+void printloc(location loc) {
+    printf("> %s:%d:%d\n", loc.name, loc.line, loc.col);
+}
 
 string *newstr(int len, char *chars) {
     if (len < 0 && chars) len = strlen(chars);
@@ -185,8 +222,8 @@ string *intern(int len, char *chars) {
 
 
 
-#define value(F,...) (value) {F, __VA_ARGS__}
-#define values(VAL, NEXT) new(values, VAL, NEXT)
+#define value(F,...) ((value) {F, __VA_ARGS__})
+#define values(VAL, NEXT) (new(values, VAL, NEXT))
 #define hack(X) value(NOVAL, .hack=X)
 #define theint(X) value(INT, .integer=X)
 #define thechar(X) value(CHAR, .integer=X)
@@ -238,6 +275,48 @@ value newtup(int len, value *vals) {
 #define newnative(E,ARITY,LEFT,OP) theclos(new(struct clos,0,E,ARITY,LEFT,OP))
 
 #define newdata(CONSTR, ARG) thedata(new(struct data, CONSTR, ARG))
+#define some(ARG) newdata(some_id, ARG)
+
+
+
+#define type(F, ...) new(struct type, F, __VA_ARGS__)
+#define types(T, N) new(struct types, T, N)
+#define typesub(FROM, TO, NEXT) new(struct typesub, FROM, TO, NEXT)
+#define regular(ARG, ID) type(REGULAR, .id=ID, .args=ARG? types(ARG, 0): 0)
+#define typevar() type(TYPEVAR)
+#define fntype(FROM,TO) type(FNTYPE, .args=types(FROM, types(TO, 0)))
+#define tuptype(TYPES) type(TUPTYPE, .args=TYPES)
+#define opttype(BASE) regular(BASE, opt_id)
+#define listtype(BASE) regular(BASE, list_id)
+#define reftype(BASE) regular(BASE, ref_id)
+
+
+
+#define senv(ID, TYPE, VAL, NEXT) new(struct senv, ID, TYPE, VAL, NEXT)
+#define infix(ID, LHS, RHS, NEXT) new(struct infix, ID, LHS, RHS, NEXT)
+#define fnrules(L, PARAMS, BODY, NEXT) new(struct fnrules, L,PARAMS,BODY,NEXT)
+
+
+
+#define node(F,L,...) new(struct node, F, .loc=L, __VA_ARGS__)
+#define nodes(HD, TL) new(struct nodes, HD, TL)
+#define elit(L, X, TYPE) node(ELIT, L, .lit={X, TYPE})
+#define econstr(L, X, TYPE) node(ELIT, L, .lit={X, TYPE})
+#define evar(L, X) node(EVAR, L, .id=X)
+#define etup(L, X) node(ETUP, L, .tup=X)
+#define enil(L) node(ENIL, L)
+#define econs(L, HD, TL) node(ECONS, L, .lhs=HD, .rhs=TL)
+#define ederef(L, BODY) node(EDEREF, L, .deref=BODY)
+#define efn(L, ID, PAR, BODY) node(EFN, L, .fn={ID, PAR, BODY})
+#define eapp(L, LHS, RHS) node(EAPP, L, .lhs=LHS, .rhs=RHS)
+#define elet(L, DECS, BODY) node(ELET, L, .let={DECS, BODY, 0})
+#define erec(L, DECS, BODY) node(EREC, L, .let={DECS, BODY, 0})
+#define ecase(L, SUBJECT, DECS) node(ECASE, L, ._case={SUBJECT, DECS})
+#define eif(L, A, B, C) node(EIF, L, ._if={A, B, C})
+#define etyping(L, BODY, TYPE) node(ETYPING, L, .typing={BODY, TYPE})
+#define eseq(L, LHS, RHS) node(ESEQ, L, .lhs=LHS, .rhs=RHS)
+
+
 
 
 void print_escaped(int len, char *chars, int quote) {
@@ -338,70 +417,6 @@ bool equal(value a, value b) {
 
 
 
-// Type Constructors.
-
-#define type(F, ...) new(struct type, F, __VA_ARGS__)
-#define types(T, N) new(struct types, T, N)
-#define typesub(FROM, TO, NEXT) new(struct typesub, FROM, TO, NEXT)
-#define regular(ARG, ID) type(REGULAR, .id=ID, .args=ARG? types(ARG, 0): 0)
-#define typevar() type(TYPEVAR)
-#define fntype(FROM,TO) type(FNTYPE, .args=types(FROM, types(TO, 0)))
-#define tuptype(TYPES) type(TUPTYPE, .args=TYPES)
-
-
-
-#define senv(ID, TYPE, VAL, NEXT) new(struct senv, ID, TYPE, VAL, NEXT)
-#define infix(ID, LHS, RHS, NEXT) new(struct infix, ID, LHS, RHS, NEXT)
-#define fnrules(L, PARAMS, BODY, NEXT) new(struct fnrules, L,PARAMS,BODY,NEXT)
-
-
-
-#define node(F,L,...) new(struct node, F, .loc=L, __VA_ARGS__)
-#define nodes(HD, TL) new(struct nodes, HD, TL)
-#define elit(L, X, TYPE) node(ELIT, L, .lit={X, TYPE})
-#define econstr(L, X, TYPE) node(ELIT, L, .lit={X, TYPE})
-#define evar(L, X) node(EVAR, L, .id=X)
-#define etup(L, X) node(ETUP, L, .tup=X)
-#define enil(L) node(ENIL, L)
-#define econs(L, HD, TL) node(ECONS, L, .lhs=HD, .rhs=TL)
-#define ederef(L, BODY) node(EDEREF, L, .deref=BODY)
-#define efn(L, ID, PAR, BODY) node(EFN, L, .fn={ID, PAR, BODY})
-#define eapp(L, LHS, RHS) node(EAPP, L, .lhs=LHS, .rhs=RHS)
-#define elet(L, DECS, BODY) node(ELET, L, .let={DECS, BODY})
-#define erec(L, DECS, BODY) node(EREC, L, .let={DECS, BODY})
-#define ecase(L, SUBJECT, DECS) node(ECASE, L, ._case={SUBJECT, DECS})
-#define eif(L, A, B, C) node(EIF, L, ._if={A, B, C})
-#define etyping(L, BODY, TYPE) node(ETYPING, L, .typing={BODY, TYPE})
-#define eseq(L, LHS, RHS) node(ESEQ, L, .lhs=LHS, .rhs=RHS)
-
-
-
-
-_Noreturn void _fatal(location loc, char *msg, va_list ap) {
-    printf("boot: error %s:%d:%d: ", loc.name, loc.line, loc.col);
-    vprintf(msg, ap);
-    putchar('\n');
-    exit(1);
-}
-
-_Noreturn void syntax(char *msg, ...) {
-    va_list ap;
-    va_start(ap, msg);
-    _fatal(sloc, msg, ap);
-}
-
-_Noreturn void semantic(node *e, char *msg, ...) {
-    va_list ap;
-    va_start(ap, msg);
-    _fatal(e->loc, msg, ap);
-}
-
-_Noreturn void fatal(location loc, char *msg, ...) {
-    va_list ap;
-    va_start(ap, msg);
-    _fatal(loc, msg, ap);
-}
-
 string *readfile(char *fn) {
     FILE *file = fopen(fn, "rb");
     if (!file) return 0;
@@ -455,9 +470,11 @@ toktype next(void) {
     if (peeked)
         return peeked = false, token;
 
-    for ( ; isspace(*src) || *src == '#'; src++)
-        if (*src == '\n') sloc.line++, sloc.col = 1, sol = src + 1;
-        else if (*src == '#') while (src[1] && src[1] != '\n') src++;
+    while (true)
+        if (*src == '\n') src++, sloc.line++, sloc.col = 1, sol = src;
+        else if (isspace(*src)) src++;
+        else if (*src == '#')  while (*src && *src != '\n') src++;
+        else break;
 
     sloc.col = src - sol + 1;
 
@@ -512,7 +529,8 @@ toktype next(void) {
 
 node *expr(void);
 node *aexpr(bool required);
-type *typ(void);
+node *letexpr(node *body, bool need_body);
+type *typeexpr(void);
 
 senv *lookup(senv *env, char *id, int *index) {
     for (senv *i = env; i; i = i->next)
@@ -521,6 +539,7 @@ senv *lookup(senv *env, char *id, int *index) {
     return 0;
 }
 
+// Return the descriptor for the next token if it is an operator.
 infix *peek_infix(void) {
     if (want(TBACK)) {
         need(TID);
@@ -546,13 +565,18 @@ nodes *sequence(node *get(bool first)) {
 
 #define required_sequence(GET) nodes(GET(true), sequence(GET))
 
-types *tuptyp(void) {
+types *tuptypeexpr(void) {
     if (want(TRPAREN)) return 0;
-    type *item = typ();
-    return want(TCOMMA)? types(item, tuptyp()): (need(TRPAREN), types(item, 0));
+    type *item = typeexpr();
+    return want(TCOMMA)
+        ? types(item, tuptypeexpr())
+        : (need(TRPAREN), types(item, 0));
 }
 
-type *typ(void) {
+// Read a type expression.
+// WARNING: This may introduce types into all_types. (e.g. `_a`)
+// Save all_types before calling and restore after.
+type *typeexpr(void) {
     type    *type = 0;
     senv    *sym;
 
@@ -563,11 +587,12 @@ type *typ(void) {
             if (type->form == REGULAR && sym->type->args)
                 syntax("type constructor needs args: %s", type->id);
         } else if (*tokstr->chars == '_') // Define type if it does not exist.
-            all_types = senv(tokstr->chars, typevar(), noval, all_types);
+            type = typevar(),
+            all_types = senv(tokstr->chars, type, noval, all_types);
         else syntax("undefined type: %s", tokstr->chars);
     }
     else if (want(TLPAREN)) {
-        types   *args = tuptyp();
+        types   *args = tuptypeexpr();
         type = args && !args->next? args->type: tuptype(args);
     } else syntax("need type");
 
@@ -579,18 +604,15 @@ type *typ(void) {
             type = regular(type, sym->type->id);
         } else syntax("undefined type constructor: %s", tokstr->chars);
 
-    if (want(TARROW)) return fntype(type, typ());
+    if (want(TARROW)) return fntype(type, typeexpr());
     return type;
 }
 
-node *simplify_list(nodes *vals, location loc) {
-    if (!vals) return enil(loc);
-    return econs(vals->node->loc, vals->node, simplify_list(vals->next, loc));
-}
-
-char *patname(node *pat) {
-    // WARNING: Do not look through ETYPING.
+char *patname(node *pat, bool through_typing) {
+    // WARNING: Do not look through ETYPING for params.
     // Params are just IDs so it would strip the typing.
+    if (through_typing && pat->form == ETYPING)
+        return patname(pat->typing.body, true);
     return pat->form == EVAR && pat->id != ignore_id? pat->id: 0;
 }
 
@@ -605,6 +627,7 @@ fnrules *getfnrules(toktype delim) {
     location loc = getloc();
     nodes   *params = required_sequence(aexpr);
     node    *body = (need(delim), expr());
+    if (want(TWHERE)) body = letexpr(body, false);
     fnrules *rest = want(TMORE)? getfnrules(delim): 0;
     return fnrules(loc, params, body, rest);
 }
@@ -620,19 +643,21 @@ nodes *fn_to_case(fnrules *i) {
 // Fold parameters over body to make a curried function.
 node *foldfn(char *id, nodes *ps, node *body) {
     return ps
-        ? efn(ps->node->loc, id, patname(ps->node), foldfn(id, ps->next, body))
+        ? efn(ps->node->loc, id, patname(ps->node, false),
+            foldfn(id, ps->next, body))
         : body;
 }
 
 // Determine if any param is not a simple var or typed simple var.
 bool complexparams(nodes *i) {
-    return i && (!patname(i->node) || complexparams(i->next));
+    return i && (!patname(i->node, false) || complexparams(i->next));
 }
 
 node *fnexpr(char *id, toktype delim) {
-    location loc = getloc();
-    fnrules *rules = ((void) want(TMORE), getfnrules(delim));
-    bool    complex = rules->next;
+    location    loc = getloc();
+    fnrules     *rules = ((void) want(TMORE), getfnrules(delim));
+    bool        complex = rules->next;
+
     for (fnrules *i = rules; !complex && i; i = i->next)
         complex = complexparams(i->params);
 
@@ -659,18 +684,23 @@ node *fnexpr(char *id, toktype delim) {
     return foldfn(id, canonial, new_body);
 }
 
+node *conslist(nodes *vals, location loc) {
+    if (!vals) return enil(loc);
+    return econs(vals->node->loc, vals->node, conslist(vals->next, loc));
+}
+
 node *aexpr(bool required) {
     location    loc = getloc();
     if (!required && peek(TID) && peek_infix()) return false; // Avoid operator.
     if (want(TINT)) return elit(loc, theint(tokint), inttype);
     if (want(TCHAR)) return elit(loc, thechar(tokint), chartype);
-    if (want(TSTRING)) return elit(loc, thestr(tokstr), stringtype);
+    if (want(TSTRING)) return elit(loc, thestr(tokstr), strtype);
     if (want(TID)) return evar(loc, tokstr->chars);
     if (want(TLPAREN)) {
         nodes *vals = csv(TRPAREN);
         return vals && !vals->next? vals->node: etup(loc, vals);
     }
-    if (want(TLBRACE)) return simplify_list(csv(TRBRACE), sloc);
+    if (want(TLBRACE)) return conslist(csv(TRBRACE), sloc);
     if (want(TDEREF)) return ederef(loc, aexpr(true));
     if (want(TFN)) return fnexpr(0, TARROW);
     if (required) syntax("need expresion");
@@ -690,6 +720,10 @@ node *iexpr(int level) {
             next();
             if (i->id == cons_id)
                 lhs = econs(loc, lhs, iexpr(i->rhs));
+            else if (i->id == and_id)
+                lhs = eif(loc, lhs, iexpr(i->rhs), elit(loc, _false, booltype));
+            else if (i->id == or_id)
+                lhs = eif(loc, lhs, elit(loc, _true, booltype), iexpr(i->rhs));
             else
                 lhs = eapp(loc, evar(loc, i->id), lhs),
                 lhs = eapp(loc, lhs, iexpr(i->rhs));
@@ -702,7 +736,8 @@ node *dec(bool first) {
     if (!want(TAND) && !first) return 0;
     location loc = getloc();
     node    *lhs = aexpr(true);
-    node    *rhs = want(TEQUAL)? expr(): fnexpr(patname(lhs), TEQUAL);
+    char    *id = patname(lhs, true);
+    node    *rhs = want(TEQUAL)? expr(): fnexpr(id, TEQUAL);
     return node(-1, loc, .lhs=lhs, .rhs=rhs);
 }
 
@@ -715,14 +750,18 @@ node *rule(bool first) {
     return node(-1, loc, .lhs=lhs, .rhs=rhs);
 }
 
+node *letexpr(node *body, bool need_body) {
+    location loc = getloc();
+    bool    rec = want(TREC);
+    nodes   *decs = required_sequence(dec);
+    if (!body && need_body) body = (need(TIN), expr());
+    return rec? erec(loc, decs, body): elet(loc, decs, body);
+}
+
 node *_expr(void) {
     location loc = getloc();
-    if (want(TLET)) {
-        bool rec = want(TREC);
-        nodes *decs = required_sequence(dec);
-        node *body = (need(TIN), expr());
-        return rec? erec(loc, decs, body): elet(loc, decs, body);
-    }
+    if (want(TLET))
+        return letexpr(0, true);
     else if (want(TCASE)) {
         node    *subject = expr();
         nodes   *rules = required_sequence(rule);
@@ -739,9 +778,71 @@ node *_expr(void) {
 
 node *expr(void) {
     node *e = _expr();
-    while (want(TTYPING))
-        e = etyping(e->loc, e, typ());
+    while (want(TTYPING)) {
+        senv    *old = all_types;
+        e = etyping(e->loc, e, typeexpr());
+        all_types = old;
+    }
     return want(TSEMI)? eseq(e->loc, e, expr()): e;
+}
+
+void infixdec(bool left_assoc) {
+    int     lhs = (need(TINT), tokint);
+    while (want(TID))
+        infixes = infix(tokstr->chars, lhs, lhs + left_assoc, infixes);
+}
+
+void datacondec(type *dt) {
+    char    *id = (need(TID), tokstr->chars);
+    if (lookup(constrs, id, 0))
+        syntax("constructor redefined: %s", id);
+    senv    *old = all_types;
+    type    *type = peek(TLPAREN)? fntype(typeexpr(), dt): dt;
+    all_types = old;
+    constrs = senv(id, type, newdata(id, noval), constrs);
+}
+
+void datatypedec(void) {
+    type    *arg = 0;
+    char    *arg_id = 0;
+    if (want(TLPAREN)) {
+        arg_id = (need(TID), tokstr->chars);
+        arg = typevar();
+        need(TRPAREN);
+    }
+    type    *dt = regular(arg, (need(TID), tokstr->chars));
+
+    if (lookup(all_types, dt->id, 0))
+        syntax("type redefined: %s", dt->id);
+
+    // Define type and possibly arg.
+    all_types = senv(dt->id, dt, noval, all_types);
+    senv    *permanent = all_types;
+    if (arg) all_types = senv(arg_id, arg, noval, all_types);
+
+    need(TEQUAL);
+    want(TBAR);
+    do datacondec(dt); while (want(TBAR));
+    all_types = permanent;
+}
+
+node **script(node **ptr, senv **env) {
+    while (!want(TEOF))
+        if (want(TINFIXL)) infixdec(true);
+        else if (want(TINFIXR)) infixdec(false);
+        else if (want(TDATATYPE)) datatypedec();
+        else if (want(TSEMI)) { }
+        else if (want(TLET)) {
+            *ptr = letexpr(0, false);
+            ptr = &(*ptr)->let.body;
+        }
+        else syntax("need top-level statement");
+
+    // Add the constructors defined here to the environment.
+    for (senv *i = constrs; i; i = i->next)
+        if (!lookup(*env, i->id, 0))
+            *env = senv(i->id, i->type, i->val, *env);
+    return ptr;
 }
 
 
@@ -836,8 +937,11 @@ char *_writetype(char *out, type *type, bool paren) {
     return out;
 }
 
-char *writetype(type *type) {
-    char buf[4 * 1024];
+char *writetype(type *type, int *uid) {
+    char    buf[4 * 1024];
+    int     _ignored = 0;
+    if (!uid) uid = &_ignored;
+    rename_typevars(type, uid);
     char *end = _writetype(buf, type, false);
     return newstr(end - buf, buf)->chars;
 }
@@ -846,12 +950,14 @@ char *writetype(type *type) {
 type *unify(node *offender, type *want, type *got) {
     if (!unifies(want, got)) {
         int     uid = 0;
-        rename_typevars(want, &uid);
-        rename_typevars(got, &uid);
         semantic(offender, "type mismatch:\nwant: %s\ngot:  %s",
-            writetype(want), writetype(got));
+            writetype(want, &uid), writetype(got, &uid));
     }
     return prune(want);
+}
+
+int countsymbols(senv *base, senv *last) {
+    return base == last? 0: 1 + countsymbols(base, last->next);
 }
 
 // This is required for the "Value Restriction" to polymorphism.
@@ -1013,6 +1119,9 @@ type *check(senv *env, node *expr) {
             if (is_nonexpansive(i->node->rhs))
                 nongenerics = tmpng;
         }
+
+        expr->let.ndrop = countsymbols(env, local);
+
         t = check(local, expr->let.body);
         nongenerics = oldng;
         return t;
@@ -1021,16 +1130,16 @@ type *check(senv *env, node *expr) {
         // Define all l.h.s. functions names.
         // They are all non-generic until the body.
         for (nodes *i = expr->let.decs; i; i = i->next) {
-            if (!patname(i->node->lhs) || i->node->rhs->form != EFN)
+            if (!patname(i->node->lhs, true) || i->node->rhs->form != EFN)
                 semantic(i->node->lhs, "let rec only defines functions");
             t = typevar();
             nongenerics = types(t, nongenerics);
-            local = senv(patname(i->node->lhs), t, noval, local);
+            local = senv(patname(i->node->lhs, true), t, noval, local);
         }
 
         // Check all r.h.s. and apply restrictions from their bodies.
         for (nodes *i = expr->let.decs; i; i = i->next) {
-            t = lookup(local, patname(i->node->lhs), 0)->type;
+            t = lookup(local, patname(i->node->lhs, true), 0)->type;
             unify(i->node->lhs, t, check(local, i->node->rhs));
         }
 
@@ -1044,6 +1153,7 @@ type *check(senv *env, node *expr) {
             local = env;
             unify(i->node->lhs, t, checkpat(&local, i->node->lhs));
             unify(i->node->rhs, u, check(local, i->node->rhs));
+            i->node->ndrop = countsymbols(env, local);
             nongenerics = oldng;
         }
         return u;
@@ -1074,6 +1184,7 @@ type *check(senv *env, node *expr) {
 
 
 
+void compile(node *expr, bool is_tail);
 
 int addconst(value val) {
     for (int i = 0; i < nconstants; i++)
@@ -1084,8 +1195,8 @@ int addconst(value val) {
 
 // Patch chain of branches to go to the current ec.
 void patch(int pc) {
-    int next = program[pc];
-    program[pc] = ec;
+    int next = code[pc];
+    code[pc] = ec;
     if (next) patch(next);
 }
 
@@ -1121,7 +1232,7 @@ void compilepat(node *pat) {
     }
 }
 
-void compile(node *expr, bool is_tail) {
+void _compile(node *expr, bool is_tail) {
     int     n = 0;
     int     after_body, to_body_pc, else_case, after_all = 0;
 
@@ -1174,12 +1285,11 @@ void compile(node *expr, bool is_tail) {
     case ELET:
         for (nodes *i = expr->let.decs; i; i = i->next) {
             compile(i->node->rhs, false);
-            if (!patname(i->node->lhs)) emit(ILAST);
+            if (!patname(i->node->lhs, true)) emit(ILAST);
             compilepat(i->node->lhs);
-            n++;
         }
         compile(expr->let.body, is_tail);
-        if (!is_tail) emiti(IDROP, n);
+        if (!is_tail) emiti(IDROP, expr->let.ndrop);
         return;
 
     case EREC:
@@ -1196,6 +1306,7 @@ void compile(node *expr, bool is_tail) {
             int after_rule = i->next? emiti(IPAT, 0): emit(ILAST);
             compilepat(i->node->lhs);
             compile(i->node->rhs, is_tail);
+            if (!is_tail) emiti(IDROP, i->node->ndrop);
             if (!is_tail) after_all = emiti(IJMP, after_all);
             if (i->next) patch(after_rule);
         }
@@ -1224,31 +1335,96 @@ void compile(node *expr, bool is_tail) {
 
     case EDEREF:
         compile(expr->deref, false);
-        emit(IDER);
+        emit(IDREF);
         if (is_tail) emit(IRET);
         return;
     }
     semantic(expr, "UNCOMPILED");
 }
 
+void compile(node *expr, bool is_tail) {
+    int base = ec;
+    _compile(expr, is_tail);
+    // Mark instruction locations if they aren't already set.
+    for (int i = base; i < ec; i++)
+        if (!codeloc[i].name) codeloc[i] = expr->loc;
+}
+
 
 void listing(int from, int to) {
     for (int i = from; i < to; i++) {
-        int op = program[i];
-        if (op < 0 || op >= NINSTR) printf("INVALID_OPCODE: %d\n", op), exit(2);
-        printf("%04X %-4s", i, instructions[op].name);
-        if (instructions[op].arg) printf(" %04X", program[++i]);
+        location    loc = codeloc[i];
+        char        locbuf[1024];
+        sprintf(locbuf, "%s:%d:%d", loc.name, loc.line, loc.col);
+
+        int op = code[i];
+        if (op < 0 || op >= NINSTR)
+            fatal(loc, "INVALID_OPCODE: %d\n", op);
+
+        printf("%-32s %06X %-4s", locbuf, i, instructions[op].name);
+        if (instructions[op].arg) printf(" %04X", code[++i]);
         puts("");
     }
 }
 
 
+value substr(string *s, int i, int j) {
+    if (i < 0) i += s->len;
+    if (j < 0) j += s->len + 1;
+    // if (i < 0 || i > s->len) fatal(codeloc[c - 1 - code], "OUT OF BOUNDS");
+    // if (j < 0 || j > s->len) fatal(codeloc[c - 1 - code], "OUT OF BOUNDS");
+    // if (j < i) fatal(codeloc[c - 1 - code], "INDEXES CROSS");
+    return i == j? empty_str: thestr(newstr(j - i, s->chars + i));
+}
+
+value findstr(string *big, int after, string *small) {
+    if (small->len == 0) return some(theint(0));
+    if (big->len < small->len) return none;
+    int limit = big->len - small->len + 1;
+    for (int i = after; i < limit; ) {
+        if (!memcmp(big->chars + i, small->chars, small->len))
+            return some(theint(i));
+        i++;
+        while (i < limit && big->chars[i] != *small->chars) i++;
+    }
+    return none;
+}
+
+value join(value list) {
+    int     len = 0;
+    for (value i = list; iscons(i); i = tl(i)) len += size(hd(i));
+    string  *str = newstr(len, 0);
+    int     base = 0;
+    for (value i = list; iscons(i); i = tl(i)) {
+        memcpy(str->chars + base, chars(hd(i)), size(hd(i)));
+        base += size(hd(i));
+    }
+    return thestr(str);
+}
+
+value implode(value list) {
+    int     len = 0;
+    for (value i = list; iscons(i); i = tl(i)) len++;
+    string  *str = newstr(len, 0);
+    char    *ptr = str->chars;
+    for (value i = list; iscons(i); i = tl(i)) *ptr++ = charval(hd(i));
+    return thestr(str);
+}
+
+// Scan stack for return addresses and print them.
+void backtrace(value *base, value *top) {
+    for (value *i = top; i >= base; i--) {
+        if (!isnoval((*i))) continue;
+        int     vc = (int*) hackval(*i) - code;
+        if (0 <= vc && vc <= ec) printloc(codeloc[vc]);
+    }
+}
 
 #define PUSH(X) do { if (s >= endofstack) goto overflow; *++s = (X); } while (0)
-#define XCHG(N,X) (s -= N - 1, *s = X)
+#define XCHG(N,X) { value XCHG_TMP = X; s -= N - 1; *s = XCHG_TMP; }
 
 value eval(void) {
-    int     *c = program;
+    int     *c = code;
     value   *stack = malloc(stack_size * sizeof *stack);
     value   *endofstack = stack + stack_size;
     value   *s = stack - 1;
@@ -1260,54 +1436,43 @@ value eval(void) {
     struct pat { value subject, *s; values *e; int *c; } p = {noval, 0, 0, 0};
 
     while (true)
-    // while (listing(c-program, c-program+1), true)
+    // while (listing(c-code, c-code+1), true)
     switch ((opcode) *c++) {
-    case IHLT:
-        if (s != stack) printf("INVALID_STACK: %ld", s - stack + 1), exit(2);
-        return *s;
+    case IHLT:      if (s != stack)
+                        fatal(codeloc[c - code], "INVALID_STACK: %ld",
+                            s - stack + 1);
+                    return *s;
     case ILIT:      PUSH(constants[*c++]); break;
-    case IVAR:      n = *c++;
-                    var = e;
-                    while (n--) var = var->next;
+    case IVAR:      for (var = e, n = *c++; n--; var = var->next) {}
                     PUSH(var->val);
                     break;
-    case ITUP:      n = *c++; XCHG(n, newtup(n, s)); break;
+    case ITUP:      n = *c++; XCHG(n, newtup(n, s - n + 1)); break;
     case INIL:      PUSH(nil); break;
-    case ICONS:     XCHG(2, cons(s[0], s[1])); break;
-    case IDAT:      XCHG(1, newdata(chars(constants[*c++]), *s)); break;
+    case ICONS:     XCHG(2, cons(s[-1], s[0])); break;
     case ICLOS:     PUSH(newclos(*c++, e)); break;
-    case IRET:
-
-    ret:
-                    a = *s--;
-                    c = hackval(*s--);
-                    e = hackval(*s--);
-                    PUSH(a);
-                    break;
+    case IRET:      goto ret;
     case ITAIL:
     case IAPP:      is_tail = c[-1] == ITAIL;
                     a = *s--;
                     b = *s--;
-                    if (isdata(b)) {
+                    if (isdata(b)) { // Apply data constructor.
                         PUSH(newdata(datacon(b), a));
                         if (is_tail) goto ret;
                     }
-                    else if (closval(b)->remain > 1) {
-                        PUSH(newnative(
-                            values(a, closval(b)->e),
-                            closval(b)->arity,
-                            closval(b)->remain - 1,
-                            closval(b)->op));
+                    else if (closval(b)->remain > 1) { // Partially applied.
+                        struct clos *f = closval(b);
+                        PUSH(newnative(values(a, f->e), f->arity,
+                            f->remain - 1, f->op));
                         if (is_tail) goto ret;
                     }
-                    else if (closval(b)->op)
+                    else if (closval(b)->op) // Fully applied native.
                         goto native;
                     else {
                         if (!is_tail) {
                             PUSH(hack(e));
                             PUSH(hack(c));
                         }
-                        c = program + closval(b)->c;
+                        c = code + closval(b)->c;
                         e = values(a, closval(b)->e);
                     }
                     break;
@@ -1320,8 +1485,8 @@ value eval(void) {
                     s -= *c++;
                     break;
     case IDROP:     n = *c++; while (n--) e = e->next; break;
-    case IJMP:      c = program + *c; break;
-    case IBRF:      c = dataval(*s--) != dataval(_true)? program + *c: c + 1;
+    case IJMP:      c = code + *c; break;
+    case IBRF:      c = dataval(*s--) != dataval(_true)? code + *c: c + 1;
                     break;
     case IPEQ:      if (!equal(*s--, constants[*c++])) goto reject; break;
     case IPTUP:     a = *s--;
@@ -1337,8 +1502,15 @@ value eval(void) {
                     PUSH(dataarg(a));
                     break;
     case ILAST:     p = (struct pat) {*s, s, e, 0}; break;
-    case IPAT:      p = (struct pat) {*s, s, e, program + *c++}; break;
-    case IDER:      XCHG(1, dataarg(*s)); break;
+    case IPAT:      p = (struct pat) {*s, s, e, code + *c++}; break;
+    case IDREF:     XCHG(1, dataarg(*s)); break;
+
+    ret:
+        a = *s--;
+        c = hackval(*s--);
+        e = hackval(*s--);
+        PUSH(a);
+        continue;
 
     native:
         // Handle native operations.
@@ -1349,38 +1521,59 @@ value eval(void) {
             PUSH(i->val);
 
         switch ((native_op) closval(b)->op) {
-        case NADD: XCHG(1, theint(intval(*s) + intval(a))); break;
-        case NSUB: XCHG(1, theint(intval(*s) - intval(a))); break;
-        case NMUL: XCHG(1, theint(intval(*s) * intval(a))); break;
-        case NDIV: XCHG(1, theint(intval(*s) / intval(a))); break;
-        case NREM: XCHG(1, theint(intval(*s) % intval(a))); break;
-        case NLT:  XCHG(1, intval(*s) < intval(a)? _true: _false); break;
-        case NGT:  XCHG(1, intval(*s) > intval(a)? _true: _false); break;
-        case NLE:  XCHG(1, intval(*s) <= intval(a)? _true: _false); break;
-        case NGE:  XCHG(1, intval(*s) >= intval(a)? _true: _false); break;
-        case NEQ:  XCHG(1, equal(*s, a)? _true: _false); break;
-        case NNE:  XCHG(1, equal(*s, a)? _false: _true); break;
-        case NPR:
-            if (valtype(a) == STRING) fwrite(chars(a), 1, size(a), stdout);
-            else if (valtype(a) == CHAR) putchar(charval(a));
-            else printval(a);
-            PUSH(a);
-            break;
-        case NSET:  dataval(*s)->arg = a; XCHG(1, a); break;
+        case NCONS:     XCHG(1, cons(*s, a)); break;
+        case NADD:      XCHG(1, theint(intval(*s) + intval(a))); break;
+        case NSUB:      XCHG(1, theint(intval(*s) - intval(a))); break;
+        case NMUL:      XCHG(1, theint(intval(*s) * intval(a))); break;
+        case NDIV:      XCHG(1, theint(intval(*s) / intval(a))); break;
+        case NREM:      XCHG(1, theint(intval(*s) % intval(a))); break;
+        case NLT:       XCHG(1, intval(*s) < intval(a)? _true: _false); break;
+        case NGT:       XCHG(1, intval(*s) > intval(a)? _true: _false); break;
+        case NLE:       XCHG(1, intval(*s) <= intval(a)? _true: _false); break;
+        case NGE:       XCHG(1, intval(*s) >= intval(a)? _true: _false); break;
+        case NEQ:       XCHG(1, equal(*s, a)? _true: _false); break;
+        case NNE:       XCHG(1, equal(*s, a)? _false: _true); break;
+        case NPR:       if (valtype(a) == STRING) fwrite(chars(a), 1, size(a), stdout);
+                        else if (valtype(a) == CHAR) putchar(charval(a));
+                        else printval(a);
+                        PUSH(a);
+                        break;
+        case NSET:      dataval(*s)->arg = a; XCHG(1, a); break;
+        case NSIZE:     PUSH(theint(size(a))); break;
+        case NCHAT:     n = intval(a);
+                        if (n < 0) n += size(*s);
+                        if (n < 0 || n >= size(*s))
+                            fatal(codeloc[c - 1 - code], "OUT OF BOUNDS");
+                        XCHG(1, thechar(chars(*s)[n]));
+                        break;
+        case NSUBS:     XCHG(2, substr(strval(*s), intval(s[-1]), intval(a))); break;
+        case NFINDS:    XCHG(2, findstr(strval(*s), intval(s[-1]), strval(a))); break;
+        case NJOIN:     PUSH(join(a)); break;
+        case NIMPLODE:  PUSH(implode(a)); break;
+        case NORD:      PUSH(theint(charval(a))); break;
+        case NCHR:      PUSH(thechar(intval(a) % 256)); break;
+        case NRDF:      a = thestr(readfile(chars(a)));
+                        PUSH(strval(a)? newdata(some_id, a): none);
+                        break;
+        case NEXIT:     exit(intval(a));
         }
         if (is_tail) goto ret;
         continue;
 
+    // Reject a value in pattern matching.
+    // Before attempting a match, p is set. If there is a c value, jump there.
+    // Otherwise, the pattern fails.
     reject:
-        if (p.c) { s = p.s; e = p.e; c = p.c; *s = p.subject; continue; }
-        puts("FAILED PATTERN");
-        printval(p.subject);
-        puts("");
-        exit(1);
+        if (p.c) { s = p.s, e = p.e, c = p.c, *s = p.subject; continue; }
+        fputs("OFFENDING VALUE: ", stdout), printval(p.subject), puts("");
+        printloc(codeloc[c - 1 - code]);
+        backtrace(stack, s);
+        fatal(codeloc[c - 1 - code], "FAILED PATTERN");
 
+    // The stack has overflown. Exit.
     overflow:
-        puts("STACK OVERFLOW");
-        exit(1);
+        backtrace(stack, s);
+        fatal(codeloc[c - 1 - code], "STACK OVERFLOW");
     }
 }
 
@@ -1389,18 +1582,94 @@ value eval(void) {
 senv *native(senv *env, uint8_t op, char *id, ...) {
     va_list ap;
     va_start(ap, id);
-    int     n = 0;
+    int     n;
     types   *tmp = 0;
     type    *out;
-    while ((out = va_arg(ap, type*)))
-        tmp = types(out, tmp),
-        n++;
-    n--;
+    for (n = 0; (out = va_arg(ap, type*)); n++)
+        tmp = types(out, tmp);
+    n--; // Last type was the return type not a param.
     out = tmp->type;
     for (tmp = tmp->next; tmp; tmp = tmp->next)
         out = fntype(tmp->type, out);
-    value val = newnative(0, n, n, op);
-    return senv(cstr(id), out, val, env);
+    return senv(cstr(id), out, newnative(0, n, n, op), env);
+}
+
+senv *initialize(senv *e) {
+    code        = malloc(code_size * sizeof *code);
+    codeloc    = malloc(code_size * sizeof *codeloc);
+
+    // Common strings.
+    list_id     = cstr("list");
+    cons_id     = cstr(":");
+    ref_id      = cstr("ref");
+    ignore_id   = cstr("_");
+    and_id      = cstr("&&");
+    or_id       = cstr("||");
+    opt_id      = cstr("option");
+    some_id     = cstr("SOME");
+    char *true_id = cstr("true");
+    char *false_id = cstr("false");
+
+    // Intern tokens.
+    for (int i = 0; tokname[i]; i++) tokname[i] = cstr(tokname[i]);
+
+    // Common Values.
+    unit        = newtup(0, 0);
+    empty_str   = thestr(intern(0, 0));
+    none        = newdata(cstr("NONE"), noval);
+
+    // Define basis types.
+    type *a = typevar();
+    type *i = inttype     = regular(0, cstr("int"));
+    type *c = chartype    = regular(0, cstr("char"));
+    type *s = strtype     = regular(0, cstr("string"));
+    type *b = booltype    = regular(0, cstr("bool"));
+    all_types = senv(i->id, i, noval, all_types);
+    all_types = senv(c->id, c, noval, all_types);
+    all_types = senv(s->id, s, noval, all_types);
+    all_types = senv(b->id, b, noval, all_types);
+    all_types = senv(list_id, listtype(a), noval, all_types);
+    all_types = senv(ref_id, reftype(a), noval, all_types);
+    all_types = senv(opt_id, opttype(a), noval, all_types);
+
+    // Basis data constructors.
+    _false = newdata(false_id, noval);
+    _true = newdata(true_id, noval);
+    value _ref = newdata(ref_id, noval);
+    value _some = newdata(some_id, noval);
+    constrs = senv(false_id, b, _false, constrs);
+    constrs = senv(true_id, b, _true, constrs);
+    constrs = senv(ref_id, fntype(a, reftype(a)), _ref, constrs);
+    constrs = senv(datacon(none), opttype(a), none, constrs);
+    constrs = senv(some_id, fntype(a, opttype(a)), _some, constrs);
+
+    // Basis functions.
+    e = native(e, NCONS, ":", a, listtype(a), listtype(a), NULL);
+    e = native(e, NADD, "+", i, i, i, NULL);
+    e = native(e, NSUB, "-", i, i, i, NULL);
+    e = native(e, NMUL, "*", i, i, i, NULL);
+    e = native(e, NDIV, "/", i, i, i, NULL);
+    e = native(e, NREM, "rem", i, i, i, NULL);
+    e = native(e, NLT, "<", i, i, b, NULL);
+    e = native(e, NGT, ">", i, i, b, NULL);
+    e = native(e, NLE, "<=", i, i, b, NULL);
+    e = native(e, NGE, ">=", i, i, b, NULL);
+    e = native(e, NEQ, "==", a, a, b, NULL);
+    e = native(e, NNE, "<>", a, a, b, NULL);
+    e = native(e, NPR, "pr", a, a, NULL);
+    e = native(e, NSET, ":=", reftype(a), a, a, NULL);
+    e = native(e, NSIZE, "size", s, i, NULL);
+    e = native(e, NCHAT, "char_at", s, i, c, NULL);
+    e = native(e, NSUBS, "substr", s, i, i, s, NULL);
+    e = native(e, NFINDS, "findstr", s, i, s, opttype(i), NULL);
+    e = native(e, NJOIN, "join", listtype(s), s, NULL);
+    e = native(e, NIMPLODE, "implode", listtype(c), s, NULL);
+    e = native(e, NORD, "ord", c, i, NULL);
+    e = native(e, NCHR, "chr", i, c, NULL);
+    e = native(e, NRDF, "readfile", s, opttype(s), NULL);
+    e = native(e, NEXIT, "exit", i, a, NULL);
+
+    return e;
 }
 
 
@@ -1409,108 +1678,20 @@ int main(int argc, char **argv) {
 
     setvbuf(stdout, 0, _IONBF, 0);
 
-    unit = newtup(0, 0);
+    senv    *basis = initialize(0);
+    node    *e = 0;
+    node    **eptr = &e;
 
-    for (int i = 0; tokname[i]; i++)
-        tokname[i] = cstr(tokname[i]);
-
-    list_id = cstr("list");
-    cons_id = cstr(":");
-    ref_id = cstr("ref");
-    ignore_id = cstr("_");
-
-    type    *atype = typevar();
-
-    inttype = regular(0, cstr("int"));
-    chartype = regular(0, cstr("char"));
-    stringtype = regular(0, cstr("string"));
-    booltype = regular(0, cstr("bool"));
-
-    all_types = senv(inttype->id, inttype, noval, all_types);
-    all_types = senv(chartype->id, chartype, noval, all_types);
-    all_types = senv(stringtype->id, stringtype, noval, all_types);
-    all_types = senv(booltype->id, booltype, noval, all_types);
-    all_types = senv(list_id, regular(atype, list_id), noval, all_types);
-    all_types = senv(ref_id, regular(atype, ref_id), noval, all_types);
-
-    _false = newdata(cstr("false"), noval);
-    _true = newdata(cstr("true"), noval);
-    constrs = senv(cstr("false"), booltype, _false, constrs);
-    constrs = senv(cstr("true"), booltype, _true, constrs);
-
-    constrs = senv(cstr("ref"), fntype(atype, regular(atype, ref_id)),
-        newdata(cstr("ref"), noval), constrs);
-
+    opensrc("boot.ml");
+    eptr = script(eptr, &basis);
     opensrc(argv[1]);
+    eptr = script(eptr, &basis);
+    *eptr = etup(sloc, 0); // The final result of the program.
 
-    while (true)
-        if (want(TINFIXL) || want(TINFIXR)) {
-            int     rhs = token == TINFIXL? 1: 0;
-            int     lhs = (need(TINT), tokint);
-            while (want(TID))
-                infixes = infix(tokstr->chars, lhs, lhs + rhs, infixes);
-        }
-        else if (want(TDATATYPE)) {
-            type    *arg = 0;
-            char    *arg_id = 0;
-            if (want(TLPAREN)) {
-                arg_id = (need(TID), tokstr->chars);
-                arg = typevar();
-                need(TRPAREN);
-            }
-            type    *dt = regular(arg, (need(TID), tokstr->chars));
-
-            // Define type and possibly arg;
-            if (lookup(all_types, dt->id, 0))
-                syntax("type redefined: %s", dt->id);
-            all_types = senv(dt->id, dt, noval, all_types);
-            if (arg) all_types = senv(arg_id, arg, noval, all_types);
-
-            need(TEQUAL);
-            want(TBAR);
-            do {
-                char *id = (need(TID), tokstr->chars);
-                if (lookup(constrs, id, 0))
-                    syntax("constructor redefined: %s", id);
-                type *type = peek(TLPAREN)? fntype(typ(), dt): dt;
-                constrs = senv(id, type, newdata(id, noval), constrs);
-            } while (want(TBAR));
-
-            if (arg) all_types = all_types->next; // Drop arg.
-        }
-        else if (want(TSEMI)) {}
-        else break;
-
-    senv *basis = 0;
-    for (senv *i = constrs; i; i = i->next)
-        basis = senv(i->id, i->type, i->val, basis);
-
-    basis = native(basis, NADD, "+", inttype, inttype, inttype, NULL);
-    basis = native(basis, NSUB, "-", inttype, inttype, inttype, NULL);
-    basis = native(basis, NMUL, "*", inttype, inttype, inttype, NULL);
-    basis = native(basis, NDIV, "/", inttype, inttype, inttype, NULL);
-    basis = native(basis, NREM, "rem", inttype, inttype, inttype, NULL);
-    basis = native(basis, NLT, "<", inttype, inttype, booltype, NULL);
-    basis = native(basis, NGT, ">", inttype, inttype, booltype, NULL);
-    basis = native(basis, NLE, "<=", inttype, inttype, booltype, NULL);
-    basis = native(basis, NGE, ">=", inttype, inttype, booltype, NULL);
-    basis = native(basis, NEQ, "==", atype, atype, booltype, NULL);
-    basis = native(basis, NNE, "<>", atype, atype, booltype, NULL);
-    basis = native(basis, NPR, "pr", atype, atype, NULL);
-    basis = native(basis, NSET, ":=", regular(atype, ref_id), atype, atype, NULL);
-
-    node *e = expr();
-    need(TEOF);
-    type *t = check(basis, e);
+    check(basis, e);
     compile(e, false);
     emit(IHLT);
     // puts("\nLISTING");
     // listing(0, ec);
-    // rename_typevars(t, (int[]){0});
-    // printf("\nit :: %s\n", writetype(t));
-    (void)t;
-
-    value x = eval();
-    fputs("# ", stdout), printval(x);
-    puts("\ndone.");
+    eval();
 }
