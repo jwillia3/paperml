@@ -46,8 +46,8 @@ let for_option (SOME x) f _ = f x
 
 let app_option do! option = for_option option do! (const ())
 
-let filter_option accept option =
-    fold_option (fn val -> if accept val then option else NONE)
+let filter_option accept (SOME x) = if accept x then SOME x else NONE
+--                _      NONE     = NONE
 
 let valueof (SOME x) = x
 
@@ -162,31 +162,31 @@ let separate_map
 let separate separator list = separate_map separator identity list
 
 let explode string = loop (size string) []
-where rec loop 0 out = out
---             n out  = loop (n - 1) (string `char_at (n - 1) : out)
+    where rec loop 0 out = out
+              --   n out  = loop (n - 1) (string `char_at (n - 1) : out)
 
 let split delim string = loop 0 []
-where rec loop i out =
-    case findstr string i delim
-    | SOME j -> loop (j + size delim) (substr string i j : out)
-    | NONE   -> reverse (substr string i -1 : out)
+    where rec loop i out =
+        case findstr string i delim
+        | SOME j -> loop (j + size delim) (substr string i j : out)
+        | NONE   -> reverse (substr string i -1 : out)
 
 
 let itoa n = if n < 0 then "-" ^ loop (negate n) []
              else if n == 0 then "0"
              else loop n []
-where rec loop 0 out = implode out
---             n out = loop (n / 10) ("0123456789" `char_at (n rem 10) : out)
+    where rec loop 0 out = implode out
+              --   n out = loop (n / 10) ("0123456789" `char_at (n rem 10) : out)
 
 
 let atoi str = if str `char_at 0 == '-' then 0 - loop 1 0 else loop 0 0
-where rec loop i out =  if i >= size str then
-                            out
-                        else
-                            let c = ord (str `char_at i) in
-                            if c >= 48 || c <= 57 then
-                                loop (i + 1) (out * 10 + c - 48)
-                            else out
+    where rec loop i out =  if i >= size str then
+                                out
+                            else
+                                let c = ord (str `char_at i) in
+                                if c >= 48 || c <= 57 then
+                                    loop (i + 1) (out * 10 + c - 48)
+                                else out
 
 let leftpad desired_width str = join (adjust (desired_width - size str))
 where adjust diff = replicate diff " " ++ [str]

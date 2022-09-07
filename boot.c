@@ -24,13 +24,12 @@ typedef enum {
     TEOF, TLPAREN, TRPAREN, TLBRACE, TRBRACE, TCOMMA, TBACK,
     TSEMI, TINT, TCHAR, TSTRING, TID, TEQUAL, TFN, TARROW, TLET,
     TREC, TAND, TIN, TCASE, TBAR, TIF, TTHEN, TELSE, TTYPING,
-    TINFIXL, TINFIXR, TDATATYPE, TMORE, TDEREF, TWHERE,
-} toktype;
+    TINFIXL, TINFIXR, TDATATYPE, TMORE, TDEREF, TWHERE, TAS } toktype;
 
 char *tokname[] = {"end of file", "(", ")", "[", "]", ",", "`",
     ";", "int", "char", "string", "id", "=", "fn", "->", "let",
     "rec", "and", "in", "case", "|", "if", "then", "else", "::",
-    "infixl", "infixr", "datatype", "--", "!", "where", 0 };
+    "infixl", "infixr", "datatype", "--", "!", "where", "@", 0 };
 
 struct value {
     enum { NIL, INT, CHAR, STRING, TUPLE, CONS, DATA, CLOSURE, NOVAL, } form;
@@ -72,7 +71,8 @@ struct values { value val; values *next; };
 
 struct node {
     enum { ELIT, EVAR, ETUP, ENIL, ECONS, EFN,
-        EAPP, ELET, EREC, ECASE, EIF, ETYPING, ESEQ, EDEREF, } form;
+        EAPP, ELET, EREC, ECASE, EIF, ETYPING, ESEQ, EDEREF,
+        EAS } form;
     location loc;
     union {
         struct { value val; type *type; } lit;
@@ -84,6 +84,7 @@ struct node {
         struct { node *subject; nodes *rules; } _case;
         struct { node *a, *b, *c; } _if;
         struct { node *body; type *type; } typing;
+        struct { node *e; char *id; } as;
         node *deref;
     };
 };
@@ -113,15 +114,15 @@ struct fnrules {
 #define emiti(X, Y) (emit(X), emit(Y))
 
 typedef enum opcode { IHLT, ILIT, ITUP, INIL, ICONS, IVAR,
-    ICLOS, IRET, IAPP, ITAIL, IPOP, ILET, IREC, IDROP, IJMP,
-    IBRF, IPEQ, IPTUP, IPCON, IPDAT, ILAST, IPAT, IDREF,
+    ICLOS, IRET, IAPP, ITAIL, IPOP, IAS, ILET, IREC, IDROP,
+    IJMP, IBRF, IPEQ, IPTUP, IPCON, IPDAT, ILAST, IPAT, IDREF,
 } opcode;
 struct { char *name; bool arg; } instructions[] = {
     {"HLT",0}, {"LIT",1}, {"TUP",1}, {"NIL",0}, {"CONS",0},
     {"VAR",1}, {"CLOS",1}, {"RET",0}, {"APP",0}, {"TAIL",0},
-    {"POP",0}, {"LET",0}, {"REC",1}, {"DROP",1}, {"JMP",1},
-    {"BRF",1}, {"PEQ",1}, {"PTUP",0}, {"PCON",0}, {"PDAT",1},
-    {"LAST",0}, {"PAT",1}, {"DREF",0},
+    {"POP",0}, {"AS",0}, {"LET",0}, {"REC",1}, {"DROP",1},
+    {"JMP",1}, {"BRF",1}, {"PEQ",1}, {"PTUP",0}, {"PCON",0},
+    {"PDAT",1}, {"LAST",0}, {"PAT",1}, {"DREF",0},
 };
 #define NINSTR ((int) (sizeof instructions / sizeof *instructions))
 
@@ -313,6 +314,7 @@ value newtup(int len, value *vals) {
 #define erec(L, DECS, BODY) node(EREC, L, .let={DECS, BODY, 0})
 #define ecase(L, SUBJECT, DECS) node(ECASE, L, ._case={SUBJECT, DECS})
 #define eif(L, A, B, C) node(EIF, L, ._if={A, B, C})
+#define eas(L, X, ID) node(EAS, L, .as={X, ID})
 #define etyping(L, BODY, TYPE) node(ETYPING, L, .typing={BODY, TYPE})
 #define eseq(L, LHS, RHS) node(ESEQ, L, .lhs=LHS, .rhs=RHS)
 
@@ -529,7 +531,7 @@ toktype next(void) {
 
 node *expr(void);
 node *aexpr(bool required);
-node *letexpr(node *body, bool need_body);
+node *letexpr(bool rec, node *body, bool need_body);
 type *typeexpr(void);
 
 senv *lookup(senv *env, char *id, int *index) {
@@ -627,7 +629,12 @@ fnrules *getfnrules(toktype delim) {
     location loc = getloc();
     nodes   *params = required_sequence(aexpr);
     node    *body = (need(delim), expr());
-    if (want(TWHERE)) body = letexpr(body, false);
+    if (want(TWHERE)) {
+        bool rec = want(TREC);
+        bool need_end = want(TLPAREN);
+        body = letexpr(rec, body, false);
+        if (need_end) need(TRPAREN);
+    }
     fnrules *rest = want(TMORE)? getfnrules(delim): 0;
     return fnrules(loc, params, body, rest);
 }
@@ -750,9 +757,8 @@ node *rule(bool first) {
     return node(-1, loc, .lhs=lhs, .rhs=rhs);
 }
 
-node *letexpr(node *body, bool need_body) {
+node *letexpr(bool rec, node *body, bool need_body) {
     location loc = getloc();
-    bool    rec = want(TREC);
     nodes   *decs = required_sequence(dec);
     if (!body && need_body) body = (need(TIN), expr());
     return rec? erec(loc, decs, body): elet(loc, decs, body);
@@ -761,7 +767,7 @@ node *letexpr(node *body, bool need_body) {
 node *_expr(void) {
     location loc = getloc();
     if (want(TLET))
-        return letexpr(0, true);
+        return letexpr(want(TREC), 0, true);
     else if (want(TCASE)) {
         node    *subject = expr();
         nodes   *rules = required_sequence(rule);
@@ -782,6 +788,11 @@ node *expr(void) {
         senv    *old = all_types;
         e = etyping(e->loc, e, typeexpr());
         all_types = old;
+    }
+    while (want(TAS)) {
+        location loc = getloc();
+        char    *id = (need(TID), tokstr->chars);
+        e = eas(loc, e, id);
     }
     return want(TSEMI)? eseq(e->loc, e, expr()): e;
 }
@@ -833,7 +844,7 @@ node **script(node **ptr, senv **env) {
         else if (want(TDATATYPE)) datatypedec();
         else if (want(TSEMI)) { }
         else if (want(TLET)) {
-            *ptr = letexpr(0, false);
+            *ptr = letexpr(want(TREC), 0, false);
             ptr = &(*ptr)->let.body;
         }
         else syntax("need top-level statement");
@@ -950,8 +961,9 @@ char *writetype(type *type, int *uid) {
 type *unify(node *offender, type *want, type *got) {
     if (!unifies(want, got)) {
         int     uid = 0;
-        semantic(offender, "type mismatch:\nwant: %s\ngot:  %s",
-            writetype(want, &uid), writetype(got, &uid));
+        char    *w = writetype(want, &uid);
+        char    *g = writetype(got, &uid);
+        semantic(offender, "type mismatch:\nwant: %s\ngot:  %s", w, g);
     }
     return prune(want);
 }
@@ -988,6 +1000,7 @@ bool is_nonexpansive(node *expr) {
     case EIF:
     case ESEQ:
     case EDEREF:
+    case EAS:
         return false;
     }
     return false;
@@ -1017,6 +1030,12 @@ type *checkpat(senv **env, node *pat) {
         nongenerics = types(t, nongenerics);
         *env = senv(pat->id, t, noval, *env);
         return t;
+
+    case EAS:
+        t = typevar();
+        *env = senv(pat->as.id, t, noval, *env);
+        nongenerics = types(t, nongenerics);
+        return unify(pat, checkpat(env, pat->as.e), t);
 
     case ETUP:
         for (nodes *i = pat->tup; i; i = i->next)
@@ -1126,6 +1145,8 @@ type *check(senv *env, node *expr) {
         nongenerics = oldng;
         return t;
 
+    case EAS: semantic(expr, "@ cannot be used in expression");
+
     case EREC:
         // Define all l.h.s. functions names.
         // They are all non-generic until the body.
@@ -1205,6 +1226,7 @@ void compilepat(node *pat) {
     case ELIT:      emiti(IPEQ, addconst(pat->lit.val)); break;
     case ENIL:      emiti(IPEQ, addconst(nil)); break;
     case EVAR:      if (pat->id == ignore_id) emit(IPOP); else emit(ILET); break;
+    case EAS:       emit(IAS); compilepat(pat->as.e); break;
     case ETUP:
         emit(IPTUP);
         for (nodes *i = pat->tup; i; i = i->next) compilepat(i->node);
@@ -1282,6 +1304,8 @@ void _compile(node *expr, bool is_tail) {
         emit(is_tail? ITAIL: IAPP);
         return;
 
+    case EAS: return;
+
     case ELET:
         for (nodes *i = expr->let.decs; i; i = i->next) {
             compile(i->node->rhs, false);
@@ -1298,6 +1322,7 @@ void _compile(node *expr, bool is_tail) {
             n++;
         emiti(IREC, n);
         compile(expr->let.body, is_tail);
+        if (!is_tail) emiti(IDROP, n);
         return;
 
     case ECASE:
@@ -1368,12 +1393,12 @@ void listing(int from, int to) {
 }
 
 
-value substr(string *s, int i, int j) {
+value substr(string *s, int i, int j, char **exn) {
     if (i < 0) i += s->len;
     if (j < 0) j += s->len + 1;
-    // if (i < 0 || i > s->len) fatal(codeloc[c - 1 - code], "OUT OF BOUNDS");
-    // if (j < 0 || j > s->len) fatal(codeloc[c - 1 - code], "OUT OF BOUNDS");
-    // if (j < i) fatal(codeloc[c - 1 - code], "INDEXES CROSS");
+    if (i < 0 || i > s->len) { *exn = "OUT OF BOUNDS"; return noval; }
+    if (j < 0 || j > s->len) { *exn = "OUT OF BOUNDS"; return noval; }
+    if (j < i) { *exn = "INDEXES CROSS"; return noval; }
     return i == j? empty_str: thestr(newstr(j - i, s->chars + i));
 }
 
@@ -1433,6 +1458,7 @@ value eval(void) {
     value   a, b;
     int     n;
     bool    is_tail = false;
+    char    *exn;
     struct pat { value subject, *s; values *e; int *c; } p = {noval, 0, 0, 0};
 
     while (true)
@@ -1477,6 +1503,7 @@ value eval(void) {
                     }
                     break;
     case IPOP:      s--; break;
+    case IAS:       e = values(*s, e); break;
     case ILET:      e = values(*s--, e); break;
     case IREC:      n = *c;
                     for (int i = n; i--; ) e = values(s[-i], e);
@@ -1546,7 +1573,11 @@ value eval(void) {
                             fatal(codeloc[c - 1 - code], "OUT OF BOUNDS");
                         XCHG(1, thechar(chars(*s)[n]));
                         break;
-        case NSUBS:     XCHG(2, substr(strval(*s), intval(s[-1]), intval(a))); break;
+        case NSUBS:     exn = 0;
+                        a = substr(strval(*s), intval(s[-1]), intval(a), &exn);
+                        if (exn) goto exception;
+                        XCHG(2, a);
+                        break;
         case NFINDS:    XCHG(2, findstr(strval(*s), intval(s[-1]), strval(a))); break;
         case NJOIN:     PUSH(join(a)); break;
         case NIMPLODE:  PUSH(implode(a)); break;
@@ -1574,6 +1605,11 @@ value eval(void) {
     overflow:
         backtrace(stack, s);
         fatal(codeloc[c - 1 - code], "STACK OVERFLOW");
+
+    // An exception occured in an external function.
+    exception:
+        backtrace(stack, s);
+        fatal(codeloc[c - 1 - code], exn);
     }
 }
 

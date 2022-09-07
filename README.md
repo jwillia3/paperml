@@ -1,24 +1,28 @@
+
 [ ] Exceptions
-[ ] "as" pattern
 [ ] Print closure origin
 
 ## Grammar
 ```
-script: infix/datatype/';'/let ...
+script: infix/datatype/';'/'let' ['rec'] let ...
 
-infix:  'infixl'/'inifxr' INT ID...
+infix:      'infixl'/'inifxr' INT ID...
 
 datatype:   'datatype' ['(' ID ')'] ID '=' condecs
 condecs:    '|' ID ['(' type ')']
 
-let:        ['rec'] ['and'] decs
+let:        ['and'] decs
 decs:       aexpr (fnrules | '=' expr) ['and' decs]
-fnrules:    aexpr aexpr... '=' expr ['where' let] ['--' fnrules]
+fnrules:    aexpr aexpr... '=' expr [where] ['--' fnrules]
 
-expr:       expr '::' type
+where:      'where' ['rec'] '(' let ')'
+            'where' ['rec'] let
+
+expr:       expr '@' ID
+            expr '::' type
             expr ';' expr
             iexpr
-            let 'in' expr
+            let ['rec'] 'in' expr
             'case' rules
             'if' expr 'then' expr 'else' expr
 iexpr:      aexpr... aexpr [['`'] ID iexpr]
@@ -53,6 +57,7 @@ ESCAPES:    \0 \a \b \e \f \n \r \t \v \xHH
 | APP           | w.v.S                 | E.C.S C=w(c) E=v.w(e) |
 | TAIL          | w.v.S                 | C=w(c) E=v.w(e)       |
 | POP           | v.S                   | S                     |
+| AS            | v.S                   | v.S E=v.e             |
 | LET           | v.S                   | v.E S                 |
 | REC n         | n...v.S               | S n...v.E             |
 | DROP          | v.S                   | S                     |
@@ -68,7 +73,7 @@ ESCAPES:    \0 \a \b \e \f \n \r \t \v \xHH
 
 Matching:
 - Each pattern recogniser examines the value on the top of the stack
-- Each recogniser pops the value from the stack
+- Each recogniser pops the value from the stack (except `AS`)
 - If the recogniser accepts, execution continues
 - If the recogniser rejects, jump to P(C)
 - If P(C) is 0, crash
