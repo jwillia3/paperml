@@ -4,7 +4,7 @@
 
 ## Grammar
 ```
-script: infix/datatype/';'/'let' ['rec'] let ...
+script: infix/datatype/'let' ['rec'] let ...
 
 infix:      'infixl'/'inifxr' INT ID...
 
@@ -13,7 +13,7 @@ condecs:    '|' ID ['(' type ')']
 
 let:        ['and'] decs
 decs:       aexpr (fnrules | '=' expr) ['and' decs]
-fnrules:    aexpr aexpr... '=' expr [where] ['--' fnrules]
+fnrules:    aexpr aexpr... '=' expr [where...] ['--' fnrules]
 
 where:      'where' ['rec'] '(' let ')'
             'where' ['rec'] let

@@ -252,3 +252,13 @@ and find_escape i =
                             (i, implode ['\\', quote])
                         else find_escape (i + 1)
     else (i, "")
+
+let startswith string prefix = size prefix <= size string && loop 0
+    where rec loop i =
+        i == size prefix ||
+        (string `char_at i == prefix `char_at i && loop (i + 1))
+
+let endswith string suffix = size suffix <= size string && loop -1
+    where rec loop i =
+        i == 0 - size suffix - 1 ||
+        (string `char_at i == suffix `char_at i && loop (i - 1))

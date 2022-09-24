@@ -629,7 +629,7 @@ fnrules *getfnrules(toktype delim) {
     location loc = getloc();
     nodes   *params = required_sequence(aexpr);
     node    *body = (need(delim), expr());
-    if (want(TWHERE)) {
+    while (want(TWHERE)) {
         bool rec = want(TREC);
         bool need_end = want(TLPAREN);
         body = letexpr(rec, body, false);
@@ -842,7 +842,6 @@ node **script(node **ptr, senv **env) {
         if (want(TINFIXL)) infixdec(true);
         else if (want(TINFIXR)) infixdec(false);
         else if (want(TDATATYPE)) datatypedec();
-        else if (want(TSEMI)) { }
         else if (want(TLET)) {
             *ptr = letexpr(want(TREC), 0, false);
             ptr = &(*ptr)->let.body;
