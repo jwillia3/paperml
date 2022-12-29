@@ -4,7 +4,7 @@
 
 ## Grammar
 ```
-script: infix/datatype/'let' ['rec'] let ...
+script:     infix/datatype/'let' ['rec'] let ...
 
 infix:      'infixl'/'inifxr' INT ID...
 
@@ -13,18 +13,18 @@ condecs:    '|' ID ['(' type ')']
 
 let:        ['and'] decs
 decs:       aexpr (fnrules | '=' expr) ['and' decs]
-fnrules:    aexpr aexpr... '=' expr [where...] ['--' fnrules]
+fnrules:    aexpr... '=' expr [where...] ['--' fnrules]
 
 where:      'where' ['rec'] '(' let ')'
             'where' ['rec'] let
 
-expr:       expr '@' ID
-            expr '::' type
-            expr ';' expr
-            iexpr
-            let ['rec'] 'in' expr
+expr:       expr' '@' ID
+            expr' '::' type
+            expr' ';' expr
+expr':      let ['rec'] 'in' expr
             'case' rules
             'if' expr 'then' expr 'else' expr
+            iexpr
 iexpr:      aexpr... aexpr [['`'] ID iexpr]
 aexpr:      INT / CHAR / STRING
             ID
@@ -67,6 +67,7 @@ ESCAPES:    \0 \a \b \e \f \n \r \t \v \xHH
 | PTUP          | v.S                   | ...v.S (see matching) |
 | PCON          | v.S                   | hd.tl.S (see matching)|
 | PDAT n        | v.S                   | S (see matching)      |
+| GRD           | v.S                   |
 | LAST          | v.S                   | P=(S,E,0) v.S         |
 | PAT c         | v.S                   | p=(S,E,c) v.S         |
 | DREF          | v.S                   | (!v).S                |

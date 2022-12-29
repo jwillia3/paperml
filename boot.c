@@ -629,7 +629,7 @@ fnrules *getfnrules(toktype delim) {
     location loc = getloc();
     nodes   *params = required_sequence(aexpr);
     node    *body = (need(delim), expr());
-    while (want(TWHERE)) {
+    if (want(TWHERE)) {
         bool rec = want(TREC);
         bool need_end = want(TLPAREN);
         body = letexpr(rec, body, false);
@@ -1512,7 +1512,7 @@ value eval(void) {
                     break;
     case IDROP:     n = *c++; while (n--) e = e->next; break;
     case IJMP:      c = code + *c; break;
-    case IBRF:      c = dataval(*s--) != dataval(_true)? code + *c: c + 1;
+    case IBRF:      c = equal(*s--, _true)? c + 1: code + *c;
                     break;
     case IPEQ:      if (!equal(*s--, constants[*c++])) goto reject; break;
     case IPTUP:     a = *s--;

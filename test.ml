@@ -8,6 +8,4 @@ infixr 1 := +=
 infixl 0 <<
 infixr 0 $
 
-datatype x = QUEEN | KING | JACK (string)
-
-123
+let _ = 1 :: a->b

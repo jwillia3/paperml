@@ -30,6 +30,8 @@ let $ f x = f x
 let << x f = f x
 let ^ x y = join [x, y]
 
+let before x _ = x
+
 let fst (x, _) = x
 let snd (_, x) = x
 
@@ -42,12 +44,12 @@ let fold_option f (SOME x)  = f x
     --          _ NONE      = NONE
 
 let for_option (SOME x) f _ = f x
-    --          NONE _ g = g ()
+    --          NONE    _ g = g ()
 
 let app_option do! option = for_option option do! (const ())
 
 let filter_option accept (SOME x) = if accept x then SOME x else NONE
---                _      NONE     = NONE
+    --            _      NONE     = NONE
 
 let valueof (SOME x) = x
 
@@ -71,15 +73,19 @@ let toupper c = if lower? c then chr (ord c - 32) else c
 let hd (x : _) = x
 let tl (_ : x) = x
 
-let length list =
-    count list 0
+let singleton x = [x]
+
+let length list = count list 0
     where rec count (_ : rest) n    = count rest (n + 1)
     --              [] n            = n
 
-let reverse list =
-    loop list []
+let reverse list = loop list []
     where rec loop (x : rest) out   = loop rest (x : out)
     --              [] out          = out
+
+let tail_last list = loop list []
+    where rec loop [x]      out = (reverse out, x)
+              --   (x : xs) out = loop xs (x : out)
 
 let foldl combine leftmost list =
     loop list leftmost
@@ -95,30 +101,27 @@ let foldr combine rightmost list =
 let sum list = foldl (+) 0 list
 
 let rec same_length (_ : x) (_ : y) = same_length x y
---                  [] []           = true
---                  _ _             = false
+        --          [] []           = true
+        --          _ _             = false
 
-let zip left right =
-    loop left right []
+let zip left right = loop left right []
     where rec loop (x : x') (y : y') out    = loop x' y' ((x, y) : out)
     --          _ _ out                     = reverse out
 
-let map transform list =
-    loop list []
+let map transform list = loop list []
     where rec loop (x : rest) out   = loop rest (transform x : out)
     --              _         out   = reverse out
 
-let mapi transform list =
-    loop list 0 []
+let mapi transform list = loop list 0 []
     where rec loop (x : rest) i out = loop rest (i + 1) (transform i x : out)
     --              _         _ out = reverse out
 
 let rec app do! (x : rest) = do! x; app do! rest
---          _   []         = ()
+    --      _   []         = ()
 
 let rec appi do! list = loop 0 list
-where rec loop i (x : rest) = do! i x; loop (i + 1) rest
---             _ []         = ()
+    where rec loop i (x : rest) = do! i x; loop (i + 1) rest
+    --             _ []         = ()
 
 
 let append lhs rhs = foldr (:) rhs lhs
@@ -129,7 +132,7 @@ let flatten list_of_lists = foldr append [] list_of_lists
 let flatmap transform list = flatten (map transform list)
 
 let replicate size value = loop size []
-where rec loop  n out = if n <= 0 then out else loop (n - 1) (value : out)
+    where rec loop  n out = if n <= 0 then out else loop (n - 1) (value : out)
 
 let filter true_for list =
     foldr (fn new rest -> if true_for new then new : rest else rest) [] list
@@ -137,6 +140,12 @@ let filter true_for list =
 let any? true_for list = loop list
     where rec loop (x : rest) = true_for x || loop rest
     --             []         = false
+
+let any_result? attempt list = loop list
+    where rec loop (x : rest) = case attempt x
+                                | SOME result -> SOME (x, result)
+                                | NONE -> loop rest
+    --             []         = NONE
 
 let all? true_for list = loop list
     where rec loop (x : rest) = true_for x && loop rest
@@ -189,11 +198,11 @@ let atoi str = if str `char_at 0 == '-' then 0 - loop 1 0 else loop 0 0
                                 else out
 
 let leftpad desired_width str = join (adjust (desired_width - size str))
-where adjust diff = replicate diff " " ++ [str]
+    where adjust diff = replicate diff " " ++ [str]
 
 
 let rightpad desired_width str = join (adjust (desired_width - size str))
-where adjust diff = [str] ++ replicate diff " "
+    where adjust diff = [str] ++ replicate diff " "
 
 let center desired_width str =
     if size str < desired_width then
@@ -202,56 +211,56 @@ let center desired_width str =
     else str
 
 let contains_char string char = loop 0
-where rec loop i = i < size string && (string `char_at i == char || loop (i + 1))
+    where rec loop i = i < size string && (string `char_at i == char || loop (i + 1))
 
 let unescape str = join (reverse (loop 0 []))
-where rec loop i out =
-    case findstr str i "\\"
-    | NONE   -> substr str i -1 : out
-    | SOME j -> replace i j out
-and replace i j out =
-    let prefix  = substr str i j in
-    let (j', s) = case str `char_at (j + 1)
-                  | '0' -> (2, "\0")
-                  | 'a' -> (2, "\a")
-                  | 'b' -> (2, "\b")
-                  | 'e' -> (2, "\e")
-                  | 'f' -> (2, "\f")
-                  | 'n' -> (2, "\n")
-                  | 'r' -> (2, "\r")
-                  | 't' -> (2, "\t")
-                  | 'v' -> (2, "\v")
-                  | 'x' -> (4, fromhex (char_at str) (j + 2))
-                  | c   -> (2, implode [c])
-    in loop (j + j') (s : prefix : out)
-and fromhex f i = implode [chr (hexdigit (f i) * 16 + hexdigit (f (i + 1)))]
-and hexdigit c = if digit? c then ord c - 48 else
-                 if alpha? c then ord (tolower c) - 97 else 0
+    where rec loop i out =
+        case findstr str i "\\"
+        | NONE   -> substr str i -1 : out
+        | SOME j -> replace i j out
+    and replace i j out =
+        let prefix  = substr str i j in
+        let (j', s) = case str `char_at (j + 1)
+                      | '0' -> (2, "\0")
+                      | 'a' -> (2, "\a")
+                      | 'b' -> (2, "\b")
+                      | 'e' -> (2, "\e")
+                      | 'f' -> (2, "\f")
+                      | 'n' -> (2, "\n")
+                      | 'r' -> (2, "\r")
+                      | 't' -> (2, "\t")
+                      | 'v' -> (2, "\v")
+                      | 'x' -> (4, fromhex (char_at str) (j + 2))
+                      | c   -> (2, implode [c])
+        in loop (j + j') (s : prefix : out)
+    and fromhex f i = implode [chr (hexdigit (f i) * 16 + hexdigit (f (i + 1)))]
+    and hexdigit c = if digit? c then ord c - 48 else
+                     if alpha? c then ord (tolower c) - 97 else 0
 
 
 let escape quote str = join (reverse (loop 0 []))
-where rec loop i out =
-    case find_escape i
-    | (j, "") ->    substr str i j : out
-    | (j, repl) ->  loop (j + 1) (repl : substr str i j : out)
-and find_escape i =
-    if i < size str then
-        case str `char_at i
-        | '\0' ->       (i, "\\0")
-        | '\a' ->       (i, "\\a")
-        | '\b' ->       (i, "\\b")
-        | '\e' ->       (i, "\\e")
-        | '\f' ->       (i, "\\f")
-        | '\n' ->       (i, "\\n")
-        | '\r' ->       (i, "\\r")
-        | '\t' ->       (i, "\\t")
-        | '\v' ->       (i, "\\v")
-        | '\"' ->       (i, "\\\"")
-        | '\\' ->       (i, "\\\\")
-        | c ->          if c == quote then
-                            (i, implode ['\\', quote])
-                        else find_escape (i + 1)
-    else (i, "")
+    where rec loop i out =
+        case find_escape i
+        | (j, "") ->    substr str i j : out
+        | (j, repl) ->  loop (j + 1) (repl : substr str i j : out)
+    and find_escape i =
+        if i < size str then
+            case str `char_at i
+            | '\0' ->       (i, "\\0")
+            | '\a' ->       (i, "\\a")
+            | '\b' ->       (i, "\\b")
+            | '\e' ->       (i, "\\e")
+            | '\f' ->       (i, "\\f")
+            | '\n' ->       (i, "\\n")
+            | '\r' ->       (i, "\\r")
+            | '\t' ->       (i, "\\t")
+            | '\v' ->       (i, "\\v")
+            | '\"' ->       (i, "\\\"")
+            | '\\' ->       (i, "\\\\")
+            | c ->          if c == quote then
+                                (i, implode ['\\', quote])
+                            else find_escape (i + 1)
+        else (i, "")
 
 let startswith string prefix = size prefix <= size string && loop 0
     where rec loop i =
