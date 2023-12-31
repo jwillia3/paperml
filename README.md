@@ -29,14 +29,16 @@ aexp ::=
     <con>                                                   Constructor
     '(' {<exp>} ')'                                         Tuple
     '[' {<exp>} ']'                                         List
-    '{' {<id> ['=' <exp>]} '}'                              Record
+    <rec>                                                   Record
     '!' <aexp>                                              Dereference
     '\' <pat> '->' <exp>                                    Function
     <aexp> '.' <id>                                         Field access
+    <aexp> 'with' <rec>                                     Record update
+rec ::= '{' {<id> ['=' <exp>]} '}'                          Record
 pat ::=
     apat                                                    Simple pattern
     <id> <apat>*                                            Constructor app
-    <pat> <id> <pat>                                        Infix app
+    <pat> <infix> <pat>                                     Infix app
     <pat> '::' <ty>                                         Constraint
     <pat> '@' <id>                                          Layered pattern
 apat ::=
@@ -79,7 +81,6 @@ reserved:
 
 punctuation:
     ( ) [ ] { } , . ; \
-
 ```
 
 ## Infixes
@@ -96,34 +97,4 @@ infixr 3 # and
 infixr 2 # or
 infixl 1 @
 infixr 0 $
-```
-
-
-# Core
-```
-exp ::=
-    <aexp>
-    <exp> <aexp>
-    <exp> ':' <ty>
-    'let' <id> '=' <exp> 'in' <exp>
-    'let' 'rec' ('rec'
-    'case' <exp> ('|' <pat> '->' <exp>)*
-    '\' <id> '->' <exp>
-aexp ::=
-    <literal>
-    <var>
-    <con>
-    '{' {<id> '=' <exp>} '}'
-    '(' <exp> ')'
-pat ::=
-    <apat>
-    <con> <apat>
-    <pat> '::' <ty>
-    <pat> '@' <id>
-apat ::=
-    '_'
-    <var>
-    <con>
-    '{' {<id> '=' <pat>} '}
-    '(' <pat> ')'
 ```

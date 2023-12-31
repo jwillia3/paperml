@@ -11,10 +11,19 @@ infixr 2 # or
 infixl 1 @
 infixr 0 $
 
-datatype BOOL = FALSE | TRUE
-datatype LIST with a = NIL | CONS a (a LIST)
-datatype MAP with a b = NOMAP | MAP a b (a and b MAP)
+# let of f g x = f (g x)
+#
+# let rec foldr f y xs =
+#     case xs
+#     | [] -> y
+#     | x:xs' -> f x (foldr f y xs')
+#
+# let xs ++ ys = foldr (:) ys xs
+#
+# let flatten xss = foldr (++) [] xss
+#
+# let map f xs = foldr ((:) of f) [] xs
+#
+# let flatmap f xs = flatten (map f xs)
 
-datatype QWERTY with a :: [string]
-
-let _ = ! !abc
+let main = ()
