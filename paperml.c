@@ -19,38 +19,85 @@ typedef struct t_exp t_exp;
 typedef struct val val;
 
 typedef enum {
-    Teof, Tint, Tchar, Tstring, Tid, Tlparen, Trparen, Tlbrace, Trbrace,
-    Tlcurly, Trcurly, Tcomma, Tdot, Tsemi, Tfn, Toper, Tder, Tarrow, Tty,
+    Teof, Tint, Tchar, Tstring, Tid, Tder, Tlparen, Trparen, Tlbrace, Trbrace,
+    Tlcurly, Trcurly, Tcomma, Tdot, Tsemi, Tfn, Toper, Tarrow, Tty,
     Tlarrow, Tequal, Talso, Tand, Tcase, Tdatatype, Telse, Tendc, Tendf, Tendw,
     Tif, Tin, Tinfixl, Tinfixr, Tlet, Tor, Trec, Tthen, Twith, Twhere, Tbar,
 } t_tok;
 
 char *tokn[] = {
-    "eof", "int", "char", "string", "id", "(", ")", "[", "]",
-    "{", "}", ",", ".", ";", "\\", "`", "!", "->", "::", "<-", "=", "also",
+    "eof", "int", "char", "string", "id", "!", "(", ")", "[", "]",
+    "{", "}", ",", ".", ";", "\\", "`", "->", "::", "<-", "=", "also",
     "and", "case", "datatype", "else", "endc", "endf", "endw", "if", "in",
     "infixl", "infixr", "let", "or", "rec", "then", "with", "where", "|",
 };
 
-char *sym_chars = "!%&$+-/:<=>?@~^|*";
+char *sym_chars = "%&$+-/:<=>?@~^|*";
+
+typedef enum hostnum {
+    Oexit, Oprn, Oadd, Osub, Omul, Odiv, Orem, Olt, Ogt, Ole, Oge, Oeq, One,
+    Oord, Ochr, Oimplode, Ojoin, Ostrlen, Ocharat, Osubstr,
+} hostnum;
+
+struct hostspec {
+    char *id;
+    char *typespec;
+    int arity;
+    t_type *type;
+}
+hosts[] = {
+    [Oexit] = {"exit", "int->a", 1, 0},
+    [Oprn] = {"prn", "a->a", 1, 0},
+    [Oadd] = {"+", "int->int->int", 2, 0},
+    [Osub] = {"-", "int->int->int", 2, 0},
+    [Omul] = {"*", "int->int->int", 2, 0},
+    [Odiv] = {"/", "int->int->int", 2, 0},
+    [Orem] = {"rem", "int->int->int", 2, 0},
+    [Olt] = {"<", "int->int->bool", 2, 0},
+    [Ogt] = {">", "int->int->bool", 2, 0},
+    [Ole] = {"<=", "int->int->bool", 2, 0},
+    [Oge] = {">=", "int->int->bool", 2, 0},
+    [Oeq] = {"==", "a->a->bool", 2, 0},
+    [One] = {"<>", "a->a->bool", 2, 0},
+    [Oord] = {"ord", "char->int", 1, 0},
+    [Ochr] = {"chr", "int->char", 1, 0},
+    [Oimplode] = {"implode", "[char]->string", 1, 0},
+    [Ojoin] = {"join", "[string]->string", 1, 0},
+    [Ostrlen] = {"strlen", "string->int", 1, 0},
+    [Ocharat] = {"charat", "string->int->char", 2, 0},
+    [Osubstr] = {"substr", "string->int->int->string", 3, 0},
+};
 
 struct val {
-    enum { Int, Char, String, Data, Record, Fn } form;
+    enum { Int, Char, String, List, Tuple, Data, Record, Fn, Host } form;
     union {
         int i;
         unsigned char c;
         string *str;
+        struct list *list;
+        struct tup *tup;
         struct data *data;
         struct rec *rec;
         struct fn *fn;
+        struct host *host;
     };
 };
 
-struct data { string *con; int n; val xs[]; };
+struct list { val hd; struct list *tl; };
+struct tup { int n; val xs[]; };
+struct data { string *con; val val; };
 struct rec { int n; string **fs; val xs[]; };
+struct fn { string *id; t_exp *lhs, *rhs; struct t_env *env;};
+struct host {
+    hostnum op;
+    string *id;
+    int n;
+    int arity;
+    val xs[];
+};
 
 struct t_type {
-    enum { Type, Typevar, Polyvar, RecType, FnType } form;
+    enum { Type, Typevar, Polyvar, TupType, RecType, FnType } form;
     int n;
     int level;
     bool open;
@@ -73,8 +120,8 @@ typedef struct t_openrec {
 
 struct t_exp {
     enum {
-        Elit, Evar, Erec, Eder, Efn, Edot, Ewith, Eapp, Ety, Elet,
-        Eletrec, Ecase, Eif, Eas,
+        Elit, Evar, Elist, Etup, Erec, Eder, Efn, Edot, Ewith, Eapp, Ety, Elet,
+        Eletrec, Ecase, Eif, Eseq,
     } form;
 
     t_loc loc;
@@ -82,7 +129,9 @@ struct t_exp {
     union {
         val lit;
         string *var;
+        struct { int n; t_exp **es; } tup;
         struct { int n; string **fs; t_exp **es; } rec;
+        struct { t_exp *lhs, *rhs; } list;
         struct { string *id; t_exp *par, *e; } fn;
         t_exp *der;
         struct { t_exp *e; string *id; } dot;
@@ -94,6 +143,7 @@ struct t_exp {
         struct { struct t_decs *ds; t_exp *e; } letrec;
         struct { t_exp *e; struct t_rules *rs; } _case;
         struct { t_exp *c, *t, *f; } _if;
+        struct { t_exp *lhs, *rhs; } seq;
     };
 };
 
@@ -105,9 +155,18 @@ typedef struct t_decs {
 
 typedef struct t_rules {
     t_exp *lhs;
+    t_exp *guard;
     t_exp *rhs;
     struct t_rules *next;
 } t_rules;
+
+typedef struct t_clauses {
+    t_loc loc;
+    t_exp **ps;
+    t_exp *guard;
+    t_exp *body;
+    struct t_clauses *next;
+} t_clauses;
 
 typedef struct t_op {
     string *id;
@@ -123,8 +182,19 @@ typedef struct t_sym {
     struct t_sym *next;
 } t_sym;
 
+typedef struct t_env {
+    string *id;
+    val val;
+    struct t_env *next;
+} t_env;
+
 int ninterns;
 string *interns[65536];
+string *strings[256];
+string *empty_string;
+string *any_id;
+string *cons_id;
+string *ref_id;
 
 t_loc tokl;
 char source[65536];
@@ -142,11 +212,6 @@ int global_uid;
 int let_level;
 t_openrec *openrecs;
 
-string *tuplefs[NARG];
-string *as_id;
-string *any_id;
-string *ref_id;
-
 t_sym *all_types;
 t_sym *all_cons;
 
@@ -160,7 +225,6 @@ t_type *reftype;
 
 val unit;
 val nil;
-val cons;
 val falsev;
 val truev;
 val refcon;
@@ -173,6 +237,7 @@ void *printtype(t_type *t, bool paren);
 t_type *nametvs(t_type *t, int *uid);
 t_exp *expr(void);
 t_type *ty(void);
+t_exp *clauses2fn(t_loc loc, string *id, int nps, int nclauses, t_clauses *cs);
 
 /*
 
@@ -313,21 +378,44 @@ void *error(t_loc loc, char *msg, ...) {
 #define newint(I) ((val) {Int, .i=I})
 #define newchar(C) ((val) {Char, .c=C})
 #define newstr(STR) ((val) {String, .str=STR})
+#define newlist(LS) ((val) {List, .list=LS})
+#define cons(HD, TL) newlist(new(struct list, HD, TL))
 
-val newdata(string *con, int n, val **xs) {
-    struct data *data = malloc(sizeof *data + n * sizeof *xs);
-    data->con = con;
-    data->n = n;
-    if (xs) memcpy(data->xs, xs, n * sizeof *xs);
-    return (val){Data, .data=data};
+val newdata(string *con, val x) {
+    return (val) { Data, .data=new(struct data, con, x) };
 }
 
-val newrec(string **fs, int n, val **xs) {
+val newtup(int n, val *xs) {
+    struct tup *tup = malloc(sizeof *tup + n * sizeof *xs);
+    tup->n = n;
+    if (xs) memcpy(tup->xs, xs, n * sizeof *xs);
+    return (val) { Tuple, .tup=tup };
+}
+
+val newrec(string **fs, int n, val *xs) {
     struct rec *rec = malloc(sizeof *rec + n * sizeof *xs);
     rec->fs = fs;
     rec->n = n;
     if (xs) memcpy(rec->xs, xs, n * sizeof *xs);
-    return (val){Record, .rec=rec};
+    return (val) { Record, .rec=rec };
+}
+
+val newfn(string *id, t_exp *lhs, t_exp *rhs, t_env *env) {
+    return (val) { Fn, .fn=new(struct fn, id, lhs, rhs, env) };
+}
+
+val newhost(hostnum op, string *id, int n, int arity, val *xs) {
+    struct host *host = malloc(sizeof *host + n * sizeof *xs);
+    host->op = op;
+    host->id = id;
+    host->n = n;
+    host->arity = arity;
+    if (xs) memcpy(host->xs, xs, n * sizeof *xs);
+    return (val) { Host, .host=host };
+}
+
+bool isunit(val x) {
+    return x.form == Tuple && x.tup->n == 0;
 }
 
 void *printval(val x, bool paren) {
@@ -336,8 +424,11 @@ void *printval(val x, bool paren) {
         case Int:
         case Char:
         case String:
+        case List:
+        case Tuple:
         case Data:
         case Record:
+        case Host:
             break;
 
         case Fn:
@@ -361,30 +452,34 @@ void *printval(val x, bool paren) {
             printesc(x.str->txt[i]);
         return print("\"");
 
+    case List:
+        print("[");
+        for (struct list *i = x.list; i; i = i->tl)
+            print(i->tl? "%v, ": "%v", i->hd);
+        return print("]");
+
+    case Tuple:
+        print("(");
+        for (int i = 0; i < x.tup->n; i++)
+            print(i? ", %v": "%v", x.tup->xs[i]);
+        return print(")");
+
     case Data:
-        if (paren && x.data->n) return print("(%v)", x);
-        else {
-            print("%S", x.data->con);
-            for (int i = 0; i < x.data->n; i++)
-                print(" %V", x.data->xs[i]);
-            return 0;
-        }
+        if (isunit(x.data->val)) return print("%S", x.data->con);
+
+        if (paren) return print("(%v)", x);
+
+        return print("%S %V", x.data->con, x.data->val);
 
     case Record:
-        if (x.rec->fs == tuplefs) {
-            print("(");
-            for (int i = 0; i < x.rec->n; i++)
-                print(i? ", %v": "%v", x.rec->xs[i]);
-            return print(")");
-        } else {
-            print("{");
-            for (int i = 0; i < x.rec->n; i++)
-                print(i? "%S=%v": "%S=%v", x.rec->fs[i], x.rec->xs[i]);
-            return print("}");
-        }
+        print("{");
+        for (int i = 0; i < x.rec->n; i++)
+            print(i? ", %S=%v": "%S=%v", x.rec->fs[i], x.rec->xs[i]);
+        return print("}");
 
-    case Fn:
-        return print("#fn");
+    case Fn: return print(x.fn->id? "%S": "#fn", x.fn->id);
+
+    case Host: return print("%S", x.host->id);
     }
 }
 
@@ -403,6 +498,12 @@ t_type *typevar(string *id) {
 
 t_type *polyvar(string *id) {
     return new(t_type, Polyvar, .id=id);
+}
+
+t_type *tuptype(int n, t_type **ts) {
+    t_type *type = new(t_type, TupType, .n=n);
+    memcpy(type->ts, ts, n * sizeof *ts);
+    return type;
 }
 
 t_type *rectype(int n, string **fs, t_type **ts, bool open) {
@@ -456,19 +557,18 @@ void *printtype(t_type *t, bool paren) {
     case Typevar: return print("%S", t->id);
     case Polyvar: return print("*%S", t->id);
 
+    case TupType:
+        print("(");
+        for (int i = 0; i < t->n; i++)
+            print(i? ", %t": "%t", t->ts[i]);
+        return print(")");
+
     case RecType:
-        if (t->fs == tuplefs) {
-            print("(");
-            for (int i = 0; i < t->n; i++)
-                print(i? ", %t": "%t", t->ts[i]);
-            return print(")");
-        } else {
-            print("{");
-            for (int i = 0; i < t->n; i++)
-                print(i? ", %S::%t": "%S::%t", t->fs[i], t->ts[i]);
-            if (t->open) print(t->n? ", _": "_");
-            return print("}");
-        }
+        print("{");
+        for (int i = 0; i < t->n; i++)
+            print(i? ", %S::%t": "%S::%t", t->fs[i], t->ts[i]);
+        if (t->open) print(t->n? ", _": "_");
+        return print("}");
 
     case FnType:
         if (paren) return print("(%t)", t);
@@ -489,17 +589,23 @@ void *printtype(t_type *t, bool paren) {
     expr() etc recognise grammar.
 */
 
+void setsrc(char *name, char *text) {
+    tokl = (t_loc) { intern(name, -1), 1, 1 };
+    srcp = linep = source;
+    peeked = false;
+    strcpy(source, text);
+}
+
 bool opensrc(char *path) {
-    tokl = (t_loc) { intern(path, -1), 1, 1 };
+    setsrc(path, "");
 
     FILE *file = fopen(path, "rb");
-    if (!file) return false;
+    if (!file)
+        error(tokl, "cannot open source");
 
     source[fread(source, 1, sizeof source, file)] = 0;
     fclose(file);
-
-    srcp = linep = source;
-    return true;
+    return file != 0;
 }
 
 int chr(void) {
@@ -558,7 +664,7 @@ t_tok next(void) {
         return tok = Tint;
     }
 
-    for (int i = Tlparen; i <= Toper; i++)
+    for (int i = Tder; i <= Toper; i++)
         if (*srcp == tokn[i][0]) {
             srcp++;
             return tok = i;
@@ -618,18 +724,20 @@ string *need(t_tok t) {
 
 #define elit(LOC, LIT) new(t_exp, Elit, LOC, .lit=LIT)
 #define evar(LOC, ID) new(t_exp, Evar, LOC, .var=ID)
+#define elist(LOC, HD, TL) new(t_exp, Elist, LOC, .list={HD, TL})
+#define etup(LOC, N, ES) new(t_exp, Etup, LOC, .tup={N, ES})
 #define erec(LOC, N, FS, ES) new(t_exp, Erec, LOC, .rec={N, FS, ES})
 #define eder(LOC, E) new(t_exp, Eder, LOC, .der=E)
 #define efn(LOC, ID, PAR, E) new(t_exp, Efn, LOC, .fn={ID, PAR, E})
 #define edot(LOC, E, ID) new(t_exp, Edot, LOC, .dot={E, ID})
 #define ewith(LOC, E, MODS) new(t_exp, Ewith, LOC, .with={E, MODS})
-#define eas(LOC, E, ID) new(t_exp, Eas, LOC, .as={E, ID})
 #define eapp(LOC, F, X) new(t_exp, Eapp, LOC, .app={F, X})
 #define ecase(LOC, E, RS) new(t_exp, Ecase, LOC, ._case={E, RS})
 #define eif(LOC, C, T, F) new(t_exp, Eif, LOC, ._if={C, T, F})
 #define elet(LOC, ID, RHS, E) new(t_exp, Elet, LOC, .let={ID, RHS, E})
 #define eletrec(LOC, DS, E) new(t_exp, Eletrec, LOC, .letrec={DS, E})
 #define ety(LOC, E, T) new(t_exp, Ety, LOC, .ty={E, T})
+#define eseq(LOC, E, F) new(t_exp, Eseq, LOC, .seq={E, F})
 
 t_exp *aexp(bool required);
 
@@ -639,11 +747,12 @@ void *printexp(t_exp *e, bool paren) {
         switch (e->form) {
         case Elit:
         case Evar:
+        case Etup:
         case Erec:
         case Eder:
             break;
 
-        case Eas:
+        case Elist:
         case Ewith:
         case Efn:
         case Eapp:
@@ -653,6 +762,7 @@ void *printexp(t_exp *e, bool paren) {
         case Eletrec:
         case Ecase:
         case Eif:
+        case Eseq:
             return print("(%e)", e);
         }
     }
@@ -663,25 +773,25 @@ void *printexp(t_exp *e, bool paren) {
 
     case Evar: return print("%S", e->var);
 
+    case Elist:
+        return print(e->list.rhs->form == Elist? "%E:%e": "%E:%E",
+            e->list.lhs, e->list.rhs);
+
+    case Etup:
+        print("(");
+        for (int i = 0; i < e->tup.n; i++)
+            print(i? ", %e": "%e", e->tup.es[i]);
+        return print(")");
+
     case Erec:
-        if (e->rec.fs == tuplefs) {
-            print("(");
-            for (int i = 0; i < e->rec.n; i++)
-                print("%s%e", i? ", ": "", e->rec.es[i]);
-            return print(")");
-        }
-        else {
-            print("{");
-            for (int i = 0; i < e->rec.n; i++)
-                print(i? ", %S = %e": "%S = %e", e->rec.fs[i], e->rec.es[i]);
-            return print("}");
-        }
+        print("{");
+        for (int i = 0; i < e->rec.n; i++)
+            print(i? ", %S = %e": "%S = %e", e->rec.fs[i], e->rec.es[i]);
+        return print("}");
 
     case Eder: return print(e->der->form == Eder? "! %E": "!%E", e->der);
 
     case Ewith: return print("%E with %e", e->with.e, e->with.mods);
-
-    case Eas: return print("%e @ %S", e->as.e, e->as.id);
 
     case Efn: return print("\\%E-> %e", e->fn.par, e->fn.e);
 
@@ -711,6 +821,9 @@ void *printexp(t_exp *e, bool paren) {
 
     case Eif:
         return print("if %e then %e else %e", e->_if.c, e->_if.t, e->_if.f);
+
+    case Eseq: return print("%e; %e", e->seq.lhs, e->seq.rhs);
+
     }
 }
 
@@ -749,7 +862,7 @@ t_type *aty(bool required) {
 
             if (n == 0) return unittype;
             if (n == 1) return ts[0];
-            return rectype(n, tuplefs, ts, false);
+            return tuptype(n, ts);
         }
 
     case Tlbrace:
@@ -850,10 +963,10 @@ t_exp *listexp(void) {
     if (want(Trbrace)) return elit(loc, nil);
 
     t_exp *hd = expr();
-t_exp *tl = want(Tcomma)? listexp(): 0;
+    t_exp *tl = want(Tcomma)? listexp(): 0;
 
     if (!tl) need(Trbrace), tl = elit(loc, nil);
-    return eapp(loc, eapp(loc, elit(loc, cons), hd), tl);
+    return elist(loc, hd, tl);
 }
 
 t_exp *recexp(void) {
@@ -922,7 +1035,7 @@ t_exp *aexp(bool required) {
             e =
                 n == 0? elit(loc, unit):
                 n == 1? es[0]:
-                erec(loc, n, tuplefs, copy(n, es));
+                etup(loc, n, copy(n, es));
             break;
         }
 
@@ -938,18 +1051,35 @@ t_exp *aexp(bool required) {
 
     case Tfn:
         {
-            t_exp *params[NARG];
-            int n = 0;
+            t_clauses *cs = 0;
+            int ncs = 0;
+            int np = 0;
 
-            while ((e = aexp(false)))
-                if (n == NARG) error(e->loc, "overflown args");
-                else params[n++] = e;
+            do {
+                t_loc loc = tokl;
+                t_exp *ps[NARG];
+                int n = 0;
 
-            need(Tarrow);
-            e = expr();
+                while ((e = aexp(false)))
+                    if (n == NARG) error(e->loc, "overflown args");
+                    else ps[n++] = e;
 
-            for (int i = n - 1; i >= 0; i--)
-                e = efn(loc, NULL, params[i], e);
+                t_exp *guard = want(Tif)? expr(): 0;
+
+                if (ncs == 0) np = n;
+
+                if (n == 0) error(loc, "no parameters given");
+
+                if (n != np) error(loc, "case arity does not match");
+
+                need(Tarrow);
+                t_exp *body = expr();
+
+                cs = new(t_clauses, loc, copy(n, ps), guard, body, cs);
+                ncs++;
+            } while (want(Tbar));
+
+            e = clauses2fn(loc, 0, np, ncs, cs);
 
             break;
         }
@@ -994,6 +1124,7 @@ t_exp *iexp(int lvl) {
 
         if (tok == Tand) e = eif(loc, e, rhs, elit(loc, falsev));
         else if (tok == Tor) e = eif(loc, e, elit(loc, truev), rhs);
+        else if (id == cons_id) e = elist(loc, e, rhs);
         else e = eapp(loc, eapp(loc, f, e), rhs);
     }
 
@@ -1009,30 +1140,97 @@ void set_let_body(t_exp **let, t_exp *body) {
     *p = body;
 }
 
-void app2fn(t_exp **lhsp, t_exp **rhsp) {
+int app2params(t_exp *lhs, t_exp **ps, t_exp **f) {
 
-    if ((*lhsp)->form != Eapp) return;
+    if (lhs->form != Eapp) return -1;
 
-    t_loc loc = (*lhsp)->loc;
-    t_exp *ps[NARG];
     int n = 0;
+    t_exp *i = lhs;
+    for ( ; i->form == Eapp; i = i->app.lhs)
+        if (n == NARG) error(i->loc, "overflown params");
+        else ps[NARG - ++n] = i->app.rhs;
 
-    t_exp *tmp = *lhsp;
-    while (tmp->form == Eapp) {
-        if (n == NARG) error(tmp->loc, "overflown params");
-        ps[n++] = tmp->app.rhs;
-        tmp = tmp->app.lhs;
+    if (i->form != Evar) return -1;
+
+    memmove(ps, ps + NARG - n, n * sizeof *ps);
+
+    *f = i;
+    return n;
+}
+
+t_exp *clauses2fn(t_loc loc, string *id, int nps, int nclauses, t_clauses *cs) {
+    if (nclauses == 1) {
+        t_exp *body = cs->body;
+
+        for (int i = nps; i--; )
+            body = efn(loc, id, cs->ps[i], body);
+        return body;
     }
+    else {
+        t_rules *rs = 0;
 
-    if (tmp->form != Evar) return;
+        for ( ; cs; cs = cs->next)
+            rs = new(t_rules,
+                    nps == 1? cs->ps[0]: etup(cs->loc, nps, cs->ps),
+                    cs->guard,
+                    cs->body,
+                    rs);
 
-    *lhsp = tmp;
-    string *id = tmp->var;
+        t_exp **ps = malloc(nps * sizeof *ps);
 
-    tmp = *rhsp;
-    for (int i = 0; i < n; i++)
-        tmp = efn(loc, id, ps[i], tmp);
-    *rhsp = tmp;
+        for (int i = 0; i < nps; i++)
+            ps[i] = evar(loc, gensym());
+
+        t_exp *subject = nps == 1? *ps: etup(loc, nps, ps);
+        t_exp *body = ecase(loc, subject, rs);
+
+        for (int i = nps; i--; )
+            body = efn(loc, id, ps[i], body);
+        return body;
+    }
+}
+
+void dec(t_loc loc, t_exp **lhsp, t_exp **rhsp) {
+    t_clauses *cs = 0;
+    int nclauses = 0;
+    string *canon_id = 0;
+    int canon_n = 0;
+
+    do {
+        t_loc loc = tokl;
+        t_exp *ps[NARG];
+        t_exp *lhs = expr();
+        t_exp *guard = want(Tif)? expr(): 0;
+        t_exp *rhs = (need(Tequal), expr());
+        t_exp *f;
+
+        int n = app2params(lhs, ps, &f);
+
+        if (n == -1) {
+
+            if (nclauses || guard)
+                error(loc, "clause does not define function");
+
+            *lhsp = lhs;
+            *rhsp = rhs;
+            return;
+        }
+
+        if (nclauses == 0) {
+            canon_n = n;
+            canon_id = f->var;
+        }
+
+        if (f->var != canon_id) error(loc, "case name does not match");
+        if (n != canon_n) error(loc, "case arity does not match");
+
+        cs = new(t_clauses, loc, copy(n, ps), guard, rhs, cs);
+        nclauses++;
+
+    } while (want(Tbar));
+
+    *lhsp = evar(loc, canon_id);
+    *rhsp = clauses2fn(loc, canon_id, canon_n, nclauses, cs);
 }
 
 t_exp *let(t_tok cont) {
@@ -1043,10 +1241,8 @@ t_exp *let(t_tok cont) {
         t_decs *rs = 0;
         t_decs **p = &rs;
         while (want(Trec)) {
-            t_exp *lhs = expr();
-            t_exp *rhs = (need(Tequal), expr());
-
-            app2fn(&lhs, &rhs);
+            t_exp *lhs, *rhs;
+            dec(tokl, &lhs, &rhs);
 
             if (lhs->form != Evar || rhs->form != Efn)
                 error(rhs->loc, "rec only defines functions");
@@ -1057,11 +1253,8 @@ t_exp *let(t_tok cont) {
         e = eletrec(loc, rs, 0);
     }
     else {
-        t_exp *lhs = expr();
-        t_exp *rhs = (need(Tequal), expr());
-
-        app2fn(&lhs, &rhs);
-
+        t_exp *lhs, *rhs;
+        dec(tokl, &lhs, &rhs);
         e = elet(loc, lhs, rhs, 0);
     }
 
@@ -1093,10 +1286,12 @@ t_exp *expr(void) {
 
             while (want(Tbar)) {
                 t_exp *lhs = expr();
+                t_exp *guard = want(Tif)? expr(): 0;
                 t_exp *rhs = (need(Tarrow), expr());
-                *p = new(t_rules, lhs, rhs, 0);
+                *p = new(t_rules, lhs, guard, rhs, 0);
                 p = &(*p)->next;
             }
+            want(Tendc);
             e = ecase(loc, sub, rs);
             break;
         }
@@ -1124,6 +1319,8 @@ t_exp *expr(void) {
         }
 
         else if (want(Tty)) e = ety(loc, e, ty());
+
+        else if (want(Tsemi)) e = eseq(loc, e, expr());
 
         else break;
     }
@@ -1167,27 +1364,19 @@ void datatype_dec(void) {
 
         do {
             string *id = need(Tid);
-            t_type *ts[NARG];
-            t_type *t;
-            int n = 0;
 
             if (find(id, all_cons)) error(tokl, "redefining con: %S", id);
 
-            while ((t = aty(false)))
-                if (n == NARG) error(tokl, "overflown con params");
-                else ts[n++] = t;
+            t_type *arg = aty(false);
 
-            t = dt;
-            for (int i = n - 1; i >= 0; i--)
-                t = fntype(ts[i], t);
+            t_type *t = arg? fntype(arg, dt): dt;
 
-            define_val(&all_cons, id, t, newdata(id, 0, 0));
+            define_val(&all_cons, id, t, newdata(id, unit));
 
         } while (want(Tbar));
 
         for (int i = 0; i < n; i++) all_types = all_types->next;
     }
-
 }
 
 void top(t_exp **e) {
@@ -1253,6 +1442,7 @@ t_type *fresh(t_type *type, t_type_swap **swaps) {
     case Typevar: return type;
 
     case Type:
+    case TupType:
     case RecType:
     case FnType:
         {
@@ -1426,9 +1616,12 @@ t_type *littype(val x) {
     case Int: return inttype;
     case Char: return chartype;
     case String: return stringtype;
+    case List: assert(x.list == 0); return listtype;
     case Data: return find(x.data->con, all_cons)->type;
-    case Record: assert(x.rec->n == 0); return unittype;
+    case Tuple: assert(x.tup->n == 0); return unittype;
+    case Record: assert(!"records are never literal"); return 0;
     case Fn: assert(!"functions are never literal"); return 0;
+    case Host: return fresh(hosts[x.host->op].type, 0);
     }
 }
 
@@ -1439,9 +1632,16 @@ bool nonexpansive(t_exp *e) {
     case Efn:
         return true;
 
+    case Elist: return nonexpansive(e->list.lhs) && nonexpansive(e->list.rhs);
+
+    case Etup:
+        for (int i = 0; i < e->tup.n; i++)
+            if (!nonexpansive(e->tup.es[i])) return false;
+        return true;
+
     case Erec:
         for (int i = 0; i < e->rec.n; i++)
-            if (nonexpansive(e->rec.es[i])) return false;
+            if (!nonexpansive(e->rec.es[i])) return false;
         return true;
 
     case Eder: return nonexpansive(e->der);
@@ -1463,13 +1663,13 @@ bool nonexpansive(t_exp *e) {
     case Eletrec:
     case Ecase:
     case Eif:
-    case Eas:
+    case Eseq:
         return false;
     }
 }
 
 t_type *checkpat(t_exp *e, t_sym **env) {
-    t_type *t;
+    t_type *t, *u;
 
     switch (e->form) {
 
@@ -1481,10 +1681,18 @@ t_type *checkpat(t_exp *e, t_sym **env) {
 
         return define(env, e->var, typevar(0))->type;
 
-    case Eas:
-        t = checkpat(e->as.e, env);
-        if (e->as.id != any_id) define(env, e->as.id, t);
-        return t;
+    case Elist:
+        t = checkpat(e->list.lhs, env);
+        u = checkpat(e->list.rhs, env);
+        return unify(e->list.rhs->loc, typecon(listtype->id, 1, &t), u);
+
+    case Etup:
+        {
+            t_type *ts[NARG];
+            for (int i = 0; i < e->tup.n; i++)
+                ts[i] = checkpat(e->tup.es[i], env);
+            return tuptype(e->tup.n, ts);
+        }
 
     case Erec:
         {
@@ -1522,10 +1730,7 @@ t_type *checkpat(t_exp *e, t_sym **env) {
                 if (ofs[i] == ofs[i - 1])
                     error(e->loc, "duplicate field: %S", ofs[i]);
 
-            t = rectype(n,
-                e->rec.fs == tuplefs? tuplefs: copy(n, ofs),
-                ots,
-                open);
+            t = rectype(n, copy(n, ofs), ots, open);
 
             if (open) openrecs = new(t_openrec, e, t, openrecs);
 
@@ -1540,45 +1745,22 @@ t_type *checkpat(t_exp *e, t_sym **env) {
 
     case Eapp:
         {
-            t_exp *tmp = e;
-            t_loc locs[NARG];
-            t_exp *ps[NARG];
-            int n = 0;
+            t_exp *f = e->app.lhs;
+            t_exp *x = e->app.rhs;
 
-            while (tmp->form == Eapp) {
-                if (n == NARG) error(tmp->app.rhs->loc, "overflown args");
+            if (f->form != Elit && f->lit.form != Data) goto invalid;
 
-                locs[n] = tmp->app.rhs->loc;
-                ps[n++] = tmp->app.rhs;
+            t_type *ft = fresh(find(f->lit.data->con, all_cons)->type, 0);
+            t_type *xt = checkpat(x, env);
 
-                tmp = tmp->app.lhs;
-            }
+            ft = follow(ft);
 
-            if (tmp->form == Evar && tmp->var == as_id) {
-                if (n != 2 || ps[0]->form != Evar)
-                    error(e->loc, "@ is a special form: pat @ id");
+            if (ft->form == FnType)
+                unify(x->loc, ft->ts[0], xt);
+            else
+                unify(f->loc, fntype(xt, typevar(0)), ft);
 
-                *e = *eas(e->loc, ps[1], ps[0]->var);
-
-                return checkpat(e, env);
-            }
-
-            if (tmp->form != Elit || tmp->lit.form != Data) goto invalid;
-
-            t = fresh(find(tmp->lit.data->con, all_cons)->type, 0);
-
-            while (n--) {
-                if (t->form != FnType)
-                    error(e->app.rhs->loc, "overapplied constructor");
-
-                t_type *u = checkpat(ps[n], env);
-                unify(e->app.rhs->loc, t->ts[0], u);
-                t = t->ts[1];
-            }
-
-            if (t->form == FnType) error(e->loc, "underapplied constructor");
-
-            return t;
+            return follow(ft)->ts[1];
         }
 
     case Efn:
@@ -1588,10 +1770,11 @@ t_type *checkpat(t_exp *e, t_sym **env) {
     case Eletrec:
     case Ecase:
     case Eif:
+    case Eseq:
 
         invalid:
 
-        return error(e->loc, "invalid pattern");
+        return error(e->loc, "invalid pattern: %e", e);
     }
 }
 
@@ -1605,7 +1788,24 @@ t_type *check(t_exp *e, t_sym *env) {
         {
             t_sym *sym = find(e->var, env);
             if (!sym) error(e->loc, "undefined symbol: %S", e->var);
+
+            if (!isunit(sym->val))
+                *e = *elit(e->loc, sym->val);
+
             return fresh(sym->type, 0);
+        }
+
+    case Elist:
+        t = check(e->list.lhs, env);
+        u = check(e->list.rhs, env);
+        return unify(e->list.rhs->loc, typecon(listtype->id, 1, &t), u);
+
+    case Etup:
+        {
+            t_type *ts[NARG];
+            for (int i = 0; i < e->tup.n; i++)
+                ts[i] = check(e->tup.es[i], env);
+            return tuptype(e->tup.n, ts);
         }
 
     case Erec:
@@ -1631,10 +1831,7 @@ t_type *check(t_exp *e, t_sym *env) {
                 if (ofs[i] == ofs[i - 1])
                     error(e->loc, "duplicate field: %S", ofs[i]);
 
-            return rectype(e->rec.n,
-                e->rec.fs == tuplefs? tuplefs: copy(e->rec.n, ofs),
-                ots,
-                false);
+            return rectype(e->rec.n, copy(e->rec.n, ofs), ots, false);
         }
 
     case Eder:
@@ -1718,6 +1915,8 @@ t_type *check(t_exp *e, t_sym *env) {
         for (t_rules *r = e->_case.rs; r; r = r->next) {
             t_sym *local = env;
             unify(r->lhs->loc, u, checkpat(r->lhs, &local));
+            if (r->guard)
+                unify(r->guard->loc, booltype, check(r->guard, local));
             unify(r->rhs->loc, t, check(r->rhs, local));
         }
 
@@ -1728,7 +1927,9 @@ t_type *check(t_exp *e, t_sym *env) {
         t = check(e->_if.t, env);
         return unify(e->_if.f->loc, t, check(e->_if.f, env));
 
-    case Eas: return 0; // Never used as an expression.
+    case Eseq:
+        check(e->seq.lhs, env);
+        return check(e->seq.rhs, env);
     }
 
     return error(e->loc, "UNIMPLEMENTED"); // QQQ
@@ -1744,24 +1945,341 @@ void check_open_recs(void) {
             openrecs->type);
 }
 
+/*
+
+    Evaluation.
+
+*/
+
+t_env *to_env(t_sym *syms) {
+    return syms? new(t_env, syms->id, syms->val, to_env(syms->next)): 0;
+}
+
+val *field(struct rec *rec, string *id) {
+    for (int i = 0; i < rec->n; i++)
+        if (rec->fs[i] == id) return &rec->xs[i];
+    return 0;
+}
+
+bool equal(val a, val b) {
+    switch (a.form) {
+    case Int: return a.i == b.i;
+    case Char: return a.c == b.c;
+
+    case String:
+        return a.str == b.str ||
+            (a.str->len == b.str->len &&
+            !memcmp(a.str->txt, b.str->txt, a.str->len));
+
+    case List:
+        {
+            struct list *i = a.list;
+            struct list *j = b.list;
+
+            if (i == j) return true;
+
+            while (i && j && equal(i->hd, j->hd))
+                i = i->tl, j = j->tl;
+
+            return !i && !j;
+        }
+
+    case Data:
+        if (a.data->con == ref_id) return a.data == b.data;
+
+        return a.data == b.data ||
+            (a.data->con == b.data->con &&
+            equal(a.data->val, b.data->val));
+
+    case Tuple:
+        for (int i = 0; i < a.tup->n; i++)
+            if (!equal(a.tup->xs[i], b.tup->xs[i])) return false;
+        return true;
+
+    case Record:
+        for (int i = 0; i < a.rec->n; i++) {
+            val bv = *field(b.rec, a.rec->fs[i]);
+
+            if (!equal(a.rec->xs[i], bv)) return false;
+        }
+        return true;
+
+    case Fn: return a.fn == b.fn;
+
+    case Host: return a.host == b.host;
+    }
+}
+
+val evalhost(t_loc loc, hostnum op, val *a) {
+    #define A a[0]
+    #define B a[1]
+    #define C a[2]
+
+    switch (op) {
+    case Oprn:
+        if (a->form == String) print("%S", a->str);
+        else if (a->form == Char) putchar(a->c);
+        else print("%v", *a);
+        return *a;
+
+    case Oadd: return newint(A.i + B.i);
+    case Osub: return newint(A.i - B.i);
+    case Omul: return newint(A.i * B.i);
+    case Odiv: return newint(A.i / B.i);
+    case Orem: return newint(A.i % B.i);
+    case Olt: return A.i < B.i? truev: falsev;
+    case Ogt: return A.i > B.i? truev: falsev;
+    case Ole: return A.i <= B.i? truev: falsev;
+    case Oge: return A.i >= B.i? truev: falsev;
+    case Oeq: return equal(A, B)? truev: falsev;
+    case One: return equal(A, B)? falsev: truev;
+    case Oexit: exit(A.i);
+    case Oord: return newint(A.c);
+    case Ochr: return newchar(abs(A.i) % 255);
+
+    case Oimplode:
+        {
+            int n = 0;
+            for (struct list *i = A.list; i; i = i->tl)
+                n++;
+
+            if (n == 0) return newstr(empty_string);
+            if (n == 1) return newstr(strings[A.list->hd.c]);
+
+            string *str = mkstr(0, n);
+            n = 0;
+            for (struct list *i = A.list; i; i = i->tl)
+                str->txt[n++] = i->hd.c;
+            return newstr(str);
+        }
+
+    case Ojoin:
+        {
+            int n = 0;
+            for (struct list *i = A.list; i; i = i->tl)
+                n += i->hd.str->len;
+
+            if (n == 0) return newstr(empty_string);
+            if (A.list->tl == 0) return A.list->hd;
+
+            string *str = mkstr(0, n);
+            n = 0;
+            for (struct list *i = A.list; i; i = i->tl) {
+                memcpy(str->txt + n, i->hd.str->txt, i->hd.str->len);
+                n += i->hd.str->len;
+            }
+            return newstr(str);
+        }
+
+    case Ostrlen: return newint(A.str->len);
+
+    case Ocharat:
+        {
+            string *str = A.str;
+            int i = B.i;
+            if (i < 0) i += str->len;
+            if (i < 0 || i >= str->len)
+                error(loc, "charat: index error: %v", B);
+            return newchar(str->txt[i]);
+        }
+
+    case Osubstr:
+        {
+            string *str = A.str;
+            int i = B.i;
+            int n = C.i;
+            if (i < 0) i += str->len;
+            if (n < 0) n = str->len + n - i + 1;
+            if (i < 0 || i >= str->len || n < 0 || i + n > str->len)
+                error(loc, "substr: index error: %v %v", B, C);
+            if (n == 0) return newstr(empty_string);
+            return newstr(mkstr(str->txt + i, n));
+        }
+
+
+    }
+}
+
+t_env *match(t_exp *p, val x, t_env *env) {
+
+    if (!env) return 0;
+
+    switch (p->form) {
+    case Elit: return equal(p->lit, x)? env: 0;
+
+    case Evar: return p->var == any_id? env: new(t_env, p->var, x, env);
+
+    case Elist:
+        if (!x.list) return 0;
+
+        return match(p->list.rhs, newlist(x.list->tl),
+            match(p->list.lhs, x.list->hd, env));
+
+    case Etup:
+        for (int i = 0; env && i < p->tup.n; i++)
+            env = match(p->tup.es[i], x.tup->xs[i], env);
+        return env;
+
+    case Erec:
+        for (int i = 0; env && i < p->rec.n; i++) {
+            val bv = *field(x.rec, p->rec.fs[i]);
+            env = match(p->rec.es[i], bv, env);
+        }
+        return env;
+
+    case Eder:
+        return match(p->der, x.data->val, env);
+
+    case Eapp:
+        return p->app.lhs->lit.data->con == x.data->con?
+            match(p->app.rhs, x.data->val, env):
+            0;
+
+    case Efn:
+    case Edot:
+    case Ewith:
+    case Ety:
+    case Elet:
+    case Eletrec:
+    case Ecase:
+    case Eif:
+    case Eseq:
+        return error(p->loc, "UNREACHABLE");
+    }
+}
+
+val eval(t_exp *e, t_env *env) {
+    val f, x, y;
+
+    tail:
+
+    switch (e->form) {
+
+    case Elit: return e->lit;
+
+    case Evar:
+        for (t_env *i = env; i; i = i->next)
+            if (i->id == e->var) return i->val;
+        return error(e->loc, "%S SHOULD HAVE BEEN DEFINED", e->var), unit;
+
+    case Elist:
+        x = eval(e->list.lhs, env);
+        return cons(x, eval(e->list.rhs, env).list);
+
+    case Etup:
+        x = newtup(e->tup.n, 0);
+        for (int i = 0; i < e->tup.n; i++)
+            x.tup->xs[i] = eval(e->tup.es[i], env);
+        return x;
+
+    case Erec:
+        x = newrec(e->rec.fs, e->rec.n, 0);
+        for (int i = 0; i < e->rec.n; i++)
+            x.rec->xs[i] = eval(e->rec.es[i], env);
+        return x;
+
+    case Eder: return eval(e->der, env).data->val;
+
+    case Efn: return newfn(e->fn.id, e->fn.par, e->fn.e, env);
+
+    case Edot: return *field(eval(e->dot.e, env).rec, e->dot.id);
+
+    case Ewith:
+        y = eval(e->with.e, env);
+        x = newrec(y.rec->fs, y.rec->n, y.rec->xs);
+        for (int i = 0; i < e->with.mods->rec.n; i++)
+            *field(x.rec, e->with.mods->rec.fs[i]) =
+                eval(e->with.mods->rec.es[i], env);
+        return x;
+
+    case Eapp:
+        f = eval(e->app.lhs, env);
+        x = eval(e->app.rhs, env);
+
+        if (f.form == Data) return newdata(f.data->con, x);
+
+        if (f.form == Host) {
+            val xs[NARG];
+            memcpy(xs, f.host->xs, f.host->n * sizeof *xs);
+            xs[f.host->n] = x;
+
+            if (f.host->arity > 1)
+                return newhost(f.host->op, f.host->id,
+                    f.host->n + 1, f.host->arity - 1,
+                    xs);
+
+            return evalhost(e->loc, f.host->op, xs);
+        }
+
+        if (!(env = match(f.fn->lhs, x, f.fn->env)))
+            error(e->loc, "no match: %v", x);
+        e = f.fn->rhs;
+        goto tail;
+
+    case Ety: return eval(e->ty.e, env);
+
+    case Elet:
+        x = eval(e->let.rhs, env);
+        if (!(env = match(e->let.lhs, x, env)))
+            error(e->loc, "no match: %v", x);
+        e = e->let.e;
+        goto tail;
+
+    case Eletrec:
+        {
+            t_env *base = env;
+            for (t_decs *d = e->letrec.ds; d; d = d->next)
+                env = new(t_env, d->id, eval(d->rhs, env), env);
+            for (t_env *i = env; i != base; i = i->next)
+                i->val.fn->env = env;
+            e = e->letrec.e;
+            goto tail;
+        }
+
+    case Ecase:
+        {
+            t_env *base = env;
+            x = eval(e->_case.e, env);
+            for (t_rules *r = e->_case.rs; r; r = r->next)
+                if ((env = match(r->lhs, x, base)) &&
+                    (!r->guard ||
+                    eval(r->guard, env).data->con == truev.data->con))
+                {
+                    e = r->rhs;
+                    goto tail;
+                }
+            return error(e->loc, "no match: %v", x), unit;
+        }
+
+    case Eif:
+        x = eval(e->_if.c, env);
+        e = x.data == truev.data? e->_if.t: e->_if.f;
+        goto tail;
+
+    case Eseq:
+        eval(e->seq.lhs, env);
+        e = e->seq.rhs;
+        goto tail;
+    }
+
+    return error(e->loc, "UNEVALUATED"), unit;
+}
+
 int main(int argc, char **argv) {
     (void) argc;
 
-    for (int i = 0; i < NARG; i++) {
-        char buf[8];
-        snprintf(buf, sizeof buf, "%d", i);
-        tuplefs[i] = intern(buf, -1);
-    }
-
-    for (int i = Tder; i <= Tbar; i++)
+    for (size_t i = 0; i < sizeof tokn / sizeof *tokn; i++)
         tokn[i] = intern(tokn[i], -1)->txt;
 
-    as_id = intern("@", -1);
+    for (int i = 0; i < 256; i++)
+        strings[i] = intern((char[]){i}, 1);
+    empty_string = intern("", 0);
     any_id = intern("_", -1);
+    cons_id = intern(":", -1);
     ref_id = intern("ref", -1);
 
     t_type *a = polyvar(0);
-    unittype = rectype(0, tuplefs, 0, false);
+    unittype = tuptype(0, 0);
     booltype = typecon(intern("bool", -1), 0, 0);
     inttype = typecon(intern("int", -1), 0, 0);
     chartype = typecon(intern("char", -1), 0, 0);
@@ -1777,16 +2295,12 @@ int main(int argc, char **argv) {
     define(&all_types, listtype->id, listtype);
     define(&all_types, ref_id, reftype);
 
-    unit = newrec(tuplefs, 0, 0);
-    nil = newdata(intern("nil", -1), 0, 0);
-    cons = newdata(intern(":", -1), 0, 0);
-    falsev = newdata(intern("false", -1), 0, 0);
-    truev = newdata(intern("true", -1), 0, 0);
-    refcon = newdata(intern("ref", -1), 0, 0);
+    unit = newtup(0, 0);
+    nil = (val) { List, .list=0 };
+    falsev = newdata(intern("false", -1), unit);
+    truev = newdata(intern("true", -1), unit);
+    refcon = newdata(intern("ref", -1), unit);
 
-    define_val(&all_cons, nil.data->con, listtype, nil);
-    define_val(&all_cons, cons.data->con,
-        fntype(a, fntype(listtype, listtype)), cons);
     define_val(&all_cons, falsev.data->con, booltype, falsev);
     define_val(&all_cons, truev.data->con, booltype, truev);
     define_val(&all_cons, refcon.data->con, fntype(a, reftype), refcon);
@@ -1796,17 +2310,51 @@ int main(int argc, char **argv) {
     ops = new(t_op, intern("or", -1), 2, 2, ops);
     ops = new(t_op, intern("@", -1), 0, 1, ops);
 
-    if (!opensrc(argv[1])) error(tokl, "cannot open source");
-
-    t_sym *env = 0;
-
     t_exp *e = 0;
+
+    char *boot =
+        "infixl 10\n"
+        "infixl 9                    # `\n"
+        "infixr 9 of\n"
+        "infixl 8 * / rem\n"
+        "infixl 7 + - ^\n"
+        "infixr 6 :\n"
+        "infixl 5 == <> <= >= < >\n"
+        "infixr 4 := ++\n"
+        "infixr 3                    # and\n"
+        "infixr 2                    # or\n"
+        "infixl 1 &\n"
+        "infixr 0 $\n"
+        "datatype option with a = None | Some a\n"
+    ;
+    setsrc("boot", boot);
     top(&e);
+
+    t_sym *senv = 0;
+    define(&all_types, intern("a", -1), a);
+    for (size_t i = 0; i < sizeof hosts / sizeof *hosts; i++) {
+        struct hostspec h = hosts[i];
+        setsrc(h.id, h.typespec);
+        hosts[i].type = ty();
+        define_val(&senv, intern(h.id, -1), hosts[i].type,
+            newhost(i, intern(h.id, -1), 0, h.arity, 0));
+    }
+    all_types = all_types->next;
+
+    opensrc("std.al");
+    top(&e);
+
+    opensrc(argv[1]);
+    top(&e);
+
     set_let_body(&e, evar(tokl, intern("main", -1)));
 
-    t_type *t = check(e, env);
+    t_type *t = check(e, senv);
     check_open_recs();
-    print("> %e\n:: %t\n", e, t);
+    // print("> %e\n", e);
+    // print(":: %t\n", t);
+    (void) t;
+    eval(e, to_env(senv));
 
     puts("done.");
 }

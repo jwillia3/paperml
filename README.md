@@ -5,24 +5,29 @@ idec ::= ('inifxl' | 'infixr') <int> <id>*                  Infix declaration
 tdec ::=
   'datatype' <id> ['with' <id>*] '::' <ty>                  Type alias
   'datatype' <id> ['with' <id>*] '=' ['|'] cdec ('|' cdec)  Type dec
-cdec ::= <id> <aty>*                                        Data constructor dec
+cdec ::= <id> <aty>                                         Data constructor dec
 let ::=
     <let>+                                                  Sequential decs
     'let' <dec>                                             Single dec
 dec ::=
     <pat> '=' <exp>                                         Value dec
-    ('rec' <pat> '=' <exp>)                                 Recursive dec
+    <fdec>
+    ('rec' <fdec>)+                                         Recursive dec
+fdec ::=
+    <fdec> '|' <fdec>
+    <id> <pat>+ '=' <exp>
+    <pat> <infix> <pat> '=' <exp>
 exp ::=
     <aexp>                                                  Simple exp
     <exp> <aexp>                                            Application exp
     <exp> <infix> <exp>                                     Infix application
     <exp> ('and'|'or') <exp>                                Logic exp
-    <exp> '@' <id>                                          Field access
     <exp> '::' <ty>                                         Constraint
     <exp> 'where' <dec> ('also' <dec>)* 'endw'              Local dec
+    <exp> ';' <exp>                                         Sequence
     <let> 'in' <exp>                                        Local dec
     'if' <exp> 'then' <exp> 'else' <exp>                    Condition exp
-    'case' <exp> ('|' <pat> '->' <exp>)* ['endc']           Case exp
+    'case' <exp> <rule>* ['endc']                           Case exp
 aexp ::=
     <literal>                                               Literal value
     <var>                                                   Variable
@@ -31,16 +36,16 @@ aexp ::=
     '[' {<exp>} ']'                                         List
     <rec>                                                   Record
     '!' <aexp>                                              Dereference
-    '\' <pat> '->' <exp>                                    Function
+    '\' <apat>+ '->' <exp> ('|' <apat>+ '->' <exp>)*        Function
     <aexp> '.' <id>                                         Field access
     <aexp> 'with' <rec>                                     Record update
 rec ::= '{' {<id> ['=' <exp>]} '}'                          Record
+rule ::= '|' <pat> ['if' <exp>] '->' <exp>                  Case rule
 pat ::=
     apat                                                    Simple pattern
     <id> <apat>*                                            Constructor app
     <pat> <infix> <pat>                                     Infix app
     <pat> '::' <ty>                                         Constraint
-    <pat> '@' <id>                                          Layered pattern
 apat ::=
     <literal>                                               Literal value
     '_'                                                     Any pattern
@@ -80,7 +85,7 @@ reserved:
 
 
 punctuation:
-    ( ) [ ] { } , . ; \
+    ! ( ) [ ] { } , . ; \
 ```
 
 ## Infixes
