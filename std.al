@@ -86,9 +86,9 @@ let dropwhile p xs = loop xs where
 let mergesort (<=) xs = hd (sort (map singleton xs)) where
     rec sort (as:bs:xs') = sort (merge as bs : sort xs')
     |   sort xs          = xs
-    rec merge []        bs                  = bs
-    |   merge as        []                  = as
-    |   merge (a:as)    (b:bs) if a <= b    = a : merge as (b:bs)
-    |   merge as        (b:bs)              = b : merge as bs
+    rec merge []        bs                      = bs
+    |   merge as        []                      = as
+    |   merge (a:as)    (b:_ @ bs) if a <= b    = a : merge as bs
+    |   merge as        (b:bs)                  = b : merge as bs
 
 let stablesort (<=) xs = mergesort (<=) xs

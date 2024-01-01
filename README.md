@@ -18,16 +18,17 @@ fdec ::=
     <id> <pat>+ '=' <exp>
     <pat> <infix> <pat> '=' <exp>
 exp ::=
-    <aexp>                                                  Simple exp
-    <exp> <aexp>                                            Application exp
-    <exp> <infix> <exp>                                     Infix application
-    <exp> ('and'|'or') <exp>                                Logic exp
-    <exp> '::' <ty>                                         Constraint
-    <exp> 'where' <dec> ('also' <dec>)* 'endw'              Local dec
-    <exp> ';' <exp>                                         Sequence
     <let> 'in' <exp>                                        Local dec
     'if' <exp> 'then' <exp> 'else' <exp>                    Condition exp
     'case' <exp> <rule>* ['endc']                           Case exp
+    <iexp>                                                  Infix exp
+    <exp> '::' <ty>                                         Constraint
+    <exp> 'where' <dec> ('also' <dec>)* 'endw'              Local dec
+    <exp> ';' <exp>                                         Sequence
+iexp ::=
+    <cexp> (<infix> <cexp>)*                                Infix application
+    <cexp> ('and'|'or') <cexp>                              Logic exp
+cexp ::= <aexp>* <aexp>                                     Application exp
 aexp ::=
     <literal>                                               Literal value
     <var>                                                   Variable
@@ -44,6 +45,7 @@ rule ::= '|' <pat> ['if' <exp>] '->' <exp>                  Case rule
 pat ::=
     apat                                                    Simple pattern
     <id> <apat>*                                            Constructor app
+    <cexp> '@' id                                           Layered pat
     <pat> <infix> <pat>                                     Infix app
     <pat> '::' <ty>                                         Constraint
 apat ::=
@@ -68,7 +70,7 @@ literal ::=
     <int>
     <char>
     <string>
-id ::= /[a-zA-Z_][a-zA-Z0-9_']*|[!%&$+-/:<=>?@~^|*]/ (not reserved)
+id ::= /[a-zA-Z_][a-zA-Z0-9_']*|[%&$+-/:<=>?@~^|*]/ (not reserved)
 int ::= /-?[0-9]*/
 string ::= /"(\.|[^"])*"/       (escapes: \a \b \e \f \n \r \t \v \xHH)
 char ::= /'(\.|[^'])'/
@@ -100,6 +102,6 @@ infixl 5 == <> <= >= < >
 infixr 4 := ++
 infixr 3 # and
 infixr 2 # or
-infixl 1 @
+infixl 1 & @
 infixr 0 $
 ```

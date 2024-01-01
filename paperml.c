@@ -19,15 +19,16 @@ typedef struct t_exp t_exp;
 typedef struct val val;
 
 typedef enum {
-    Teof, Tint, Tchar, Tstring, Tid, Tder, Tlparen, Trparen, Tlbrace, Trbrace,
-    Tlcurly, Trcurly, Tcomma, Tdot, Tsemi, Tfn, Toper, Tarrow, Tty,
-    Tlarrow, Tequal, Talso, Tand, Tcase, Tdatatype, Telse, Tendc, Tendf, Tendw,
-    Tif, Tin, Tinfixl, Tinfixr, Tlet, Tor, Trec, Tthen, Twith, Twhere, Tbar,
+    Teof, Tint, Tchar, Tstring, Tid, Tder, Tlparen, Trparen,
+    Tlbrace, Trbrace, Tlcurly, Trcurly, Tcomma, Tdot, Tsemi,
+    Tfn, Toper, Tarrow, Tty, Tlarrow, Tequal, Tas, Talso, Tand,
+    Tcase, Tdatatype, Telse, Tendc, Tendf, Tendw, Tif, Tin,
+    Tinfixl, Tinfixr, Tlet, Tor, Trec, Tthen, Twith, Twhere, Tbar,
 } t_tok;
 
 char *tokn[] = {
     "eof", "int", "char", "string", "id", "!", "(", ")", "[", "]",
-    "{", "}", ",", ".", ";", "\\", "`", "->", "::", "<-", "=", "also",
+    "{", "}", ",", ".", ";", "\\", "`", "->", "::", "<-", "=", "@", "also",
     "and", "case", "datatype", "else", "endc", "endf", "endw", "if", "in",
     "infixl", "infixr", "let", "or", "rec", "then", "with", "where", "|",
 };
@@ -121,7 +122,7 @@ typedef struct t_openrec {
 struct t_exp {
     enum {
         Elit, Evar, Elist, Etup, Erec, Eder, Efn, Edot, Ewith, Eapp, Ety, Elet,
-        Eletrec, Ecase, Eif, Eseq,
+        Eletrec, Ecase, Eif, Eseq, Eas,
     } form;
 
     t_loc loc;
@@ -207,6 +208,9 @@ int toki;
 string *toks;
 t_op *ops;
 t_op *forced_op;
+t_op *and_op;
+t_op *or_op;
+t_op *as_op;
 
 int global_uid;
 int let_level;
@@ -738,6 +742,7 @@ string *need(t_tok t) {
 #define eletrec(LOC, DS, E) new(t_exp, Eletrec, LOC, .letrec={DS, E})
 #define ety(LOC, E, T) new(t_exp, Ety, LOC, .ty={E, T})
 #define eseq(LOC, E, F) new(t_exp, Eseq, LOC, .seq={E, F})
+#define eas(LOC, E, ID) new(t_exp, Eas, LOC, .as={E, ID})
 
 t_exp *aexp(bool required);
 
@@ -763,6 +768,7 @@ void *printexp(t_exp *e, bool paren) {
         case Ecase:
         case Eif:
         case Eseq:
+        case Eas:
             return print("(%e)", e);
         }
     }
@@ -823,6 +829,8 @@ void *printexp(t_exp *e, bool paren) {
         return print("if %e then %e else %e", e->_if.c, e->_if.t, e->_if.f);
 
     case Eseq: return print("%e; %e", e->seq.lhs, e->seq.rhs);
+
+    case Eas: return print("%e @ %S", e->as.e, e->as.id);
 
     }
 }
@@ -950,8 +958,11 @@ t_type *ty(void) {
 t_op *infix(int lvl) {
 
     if (peek(Toper) && (lvl == 10 || lvl < 0)) return forced_op;
+    if (peek(Tand) && (lvl == 3 || lvl < 0)) return and_op;
+    if (peek(Tor) && (lvl == 2 || lvl < 0)) return or_op;
+    if (peek(Tas) && (lvl == 1 || lvl < 0)) return as_op;
 
-    if (peek(Tid) || peek(Tand) || peek(Tor))
+    if (peek(Tid))
         for (t_op *i = ops; i; i = i->next)
             if (toks == i->id && (i->lhs == lvl || lvl < 0)) return i;
     return 0;
@@ -1122,9 +1133,13 @@ t_exp *iexp(int lvl) {
         t_exp *f = sym? elit(loc, sym->val): evar(loc, id);
         t_exp *rhs = iexp(op->rhs);
 
-        if (tok == Tand) e = eif(loc, e, rhs, elit(loc, falsev));
-        else if (tok == Tor) e = eif(loc, e, elit(loc, truev), rhs);
+        if (op == and_op) e = eif(loc, e, rhs, elit(loc, falsev));
+        else if (op == or_op) e = eif(loc, e, elit(loc, truev), rhs);
         else if (id == cons_id) e = elist(loc, e, rhs);
+        else if (op == as_op) {
+            if (rhs->form != Evar) error(rhs->loc, "need id");
+            e = eas(loc, e, rhs->var);
+        }
         else e = eapp(loc, eapp(loc, f, e), rhs);
     }
 
@@ -1664,6 +1679,7 @@ bool nonexpansive(t_exp *e) {
     case Ecase:
     case Eif:
     case Eseq:
+    case Eas:
         return false;
     }
 }
@@ -1680,6 +1696,13 @@ t_type *checkpat(t_exp *e, t_sym **env) {
         if (e->var == any_id) return typevar(0);
 
         return define(env, e->var, typevar(0))->type;
+
+    case Eas:
+        t = checkpat(e->as.e, env);
+
+        if (e->as.id != any_id) define(env, e->as.id, t);
+
+        return t;
 
     case Elist:
         t = checkpat(e->list.lhs, env);
@@ -1930,9 +1953,12 @@ t_type *check(t_exp *e, t_sym *env) {
     case Eseq:
         check(e->seq.lhs, env);
         return check(e->seq.rhs, env);
+
+    case Eas:
+        return error(e->loc, "@ is not usable as an expression");
     }
 
-    return error(e->loc, "UNIMPLEMENTED"); // QQQ
+    return error(e->loc, "UNIMPLEMENTED");
 }
 
 void check_open_recs(void) {
@@ -2109,6 +2135,11 @@ t_env *match(t_exp *p, val x, t_env *env) {
 
     case Evar: return p->var == any_id? env: new(t_env, p->var, x, env);
 
+    case Eas:
+        if (!(env = match(p->as.e, x, env))) return 0;
+
+        return new(t_env, p->as.id, x, env);
+
     case Elist:
         if (!x.list) return 0;
 
@@ -2260,6 +2291,8 @@ val eval(t_exp *e, t_env *env) {
         eval(e->seq.lhs, env);
         e = e->seq.rhs;
         goto tail;
+
+    case Eas: return unit;
     }
 
     return error(e->loc, "UNEVALUATED"), unit;
@@ -2306,9 +2339,9 @@ int main(int argc, char **argv) {
     define_val(&all_cons, refcon.data->con, fntype(a, reftype), refcon);
 
     forced_op = new(t_op, intern("`", -1), 10, 11, 0);
-    ops = new(t_op, intern("and", -1), 3, 3, ops);
-    ops = new(t_op, intern("or", -1), 2, 2, ops);
-    ops = new(t_op, intern("@", -1), 0, 1, ops);
+    and_op = ops = new(t_op, intern("and", -1), 3, 3, ops);
+    or_op = ops = new(t_op, intern("or", -1), 2, 2, ops);
+    as_op = ops = new(t_op, intern("@", -1), 0, 1, ops);
 
     t_exp *e = 0;
 
