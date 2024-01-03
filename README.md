@@ -11,16 +11,11 @@ let ::=
     'let' <dec>                                             Single dec
 dec ::=
     <pat> '=' <exp>                                         Value dec
-    <fdec>
     ('rec' <fdec>)+                                         Recursive dec
-fdec ::=
-    <fdec> '|' <fdec>
-    <id> <pat>+ '=' <exp>
-    <pat> <infix> <pat> '=' <exp>
 exp ::=
     <let> 'in' <exp>                                        Local dec
     'if' <exp> 'then' <exp> 'else' <exp>                    Condition exp
-    'case' <exp> <rule>* ['endc']                           Case exp
+    'case' <exp> ('|' <pat> '->' <exp>)* ['endc']           Case exp
     <iexp>                                                  Infix exp
     <exp> '::' <ty>                                         Constraint
     <exp> 'where' <dec> ('also' <dec>)* 'endw'              Local dec
@@ -28,6 +23,7 @@ exp ::=
 iexp ::=
     <cexp> (<infix> <cexp>)*                                Infix application
     <cexp> ('and'|'or') <cexp>                              Logic exp
+    <cexp> ':' <cexp>                                       List building
 cexp ::= <aexp>* <aexp>                                     Application exp
 aexp ::=
     <literal>                                               Literal value
@@ -37,11 +33,10 @@ aexp ::=
     '[' {<exp>} ']'                                         List
     <rec>                                                   Record
     '!' <aexp>                                              Dereference
-    '\' <apat>+ '->' <exp> ('|' <apat>+ '->' <exp>)*        Function
+    '\' <apat>+ '->' <exp>                                  Function
     <aexp> '.' <id>                                         Field access
     <aexp> 'with' <rec>                                     Record update
 rec ::= '{' {<id> ['=' <exp>]} '}'                          Record
-rule ::= '|' <pat> ['if' <exp>] '->' <exp>                  Case rule
 pat ::=
     apat                                                    Simple pattern
     <id> <apat>*                                            Constructor app
@@ -82,12 +77,12 @@ char ::= /'(\.|[^'])'/
 + indicates at least one repetition
 
 reserved:
-    ! -> :: = also and case datatype else endc endw if
+    ! -> :: = and case datatype def else endc endw if
     in infixl infixr let or rec then with where |
 
 
 punctuation:
-    ! ( ) [ ] { } , . ; \
+    ! ( ) [ ] { } , . ; \ `
 ```
 
 ## Infixes

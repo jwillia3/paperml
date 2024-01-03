@@ -1,6 +1,7 @@
 let print x = prn x; prn '\n'; x
+let abort msg = print msg; exit 1
 
-let of f g x = f (g x)
+let (of) f g x = f (g x)
 let f $ x = f x
 let x & f = f x
 let not x = if x then false else true
@@ -31,9 +32,11 @@ let log2i n = loop 0 1 where
         if n < val then exp - 1
         else loop (exp + 1) (val + val)
 
-let issome (Some _) = true
-let isnone None = true
+let issome x = case x | Some _ -> true | _ -> false
+let isnone x = case x | None -> true | _ -> false
 let valof (Some x) = x
+
+let mapopt f x = case x | Some x -> Some (f x) | None -> None
 
 let getval dflt x = case x
 | Some x -> x
@@ -94,6 +97,8 @@ let find p xs = loop xs where
     | x:xs' -> if p x then Some x else loop xs'
     | [] -> None
 
+let assoc id xs = mapopt snd (find ((==) id of fst) xs)
+
 let all p xs = loop xs where
     rec loop xs = case xs
     | x:xs' -> p x and loop xs'
@@ -105,6 +110,8 @@ let any p xs = loop xs where
     | [] -> false
 
 let none p xs = not (any p xs)
+
+let xs `contains y = any ((==) y) xs
 
 let partition p xs = foldr f ([], []) xs
     where f x (as, bs) = if p x then (x:as, bs) else (as, x:bs)
@@ -128,6 +135,8 @@ let rec take n xs =
 let rec drop n xs =
     if n <= 0 then xs
     else let _:xs' = xs in drop (n - 1) xs'
+
+let xs `nth n = let x:_ = drop n xs in x
 
 let splitn n xs = (take n xs, drop n xs)
 
@@ -171,13 +180,68 @@ let findstr src item = findsubstr src 0 item 0 -1
 let findstr' src i item = findsubstr src i item 0 -1
 
 let split delim str = loop 0 (findstr' str 0 delim)
-    where
-    rec loop    i   (Some j)    =   x:xs where
-                                    also i' = j + strlen delim
-                                    also x = substr str i (j - i)
-                                    also xs =
-                                        if i' < strlen str then
-                                            loop i' (findstr' str i' delim)
-                                        else
-                                            [""]
-    |   loop    i   None        =   [substr str i -1]
+    where rec loop i opt =
+    case opt
+    | Some j ->
+        x:xs
+        where
+        def i' = j + strlen delim
+        def x = substr str i (j - i)
+        def xs =
+            if i' < strlen str then
+                loop i' (findstr' str i' delim)
+            else
+                [""]
+    | None -> [substr str i -1]
+
+let unescape src =
+    loop 0 []
+    where rec loop i out =
+        if i < strlen src then
+            case findchar src i '\\'
+            | None -> join (rev (substr src i -1 : out))
+            | Some j ->
+                let s = substr src i (j - i)
+                let (i', s2) = unesc (j + 1)
+                in
+                loop i' (s2 : s : out)
+        else
+            join (rev out)
+    rec unesc i =
+        if i >= strlen src then
+            abort "unescape: invalid escape"
+        else
+            case charat src i
+            | 'a' -> (i + 1, "\a")
+            | 'b' -> (i + 1, "\b")
+            | 'e' -> (i + 1, "\e")
+            | 'f' -> (i + 1, "\f")
+            | 'n' -> (i + 1, "\n")
+            | 'r' -> (i + 1, "\r")
+            | 't' -> (i + 1, "\t")
+            | 'v' -> (i + 1, "\v")
+            | 'x' ->
+                if i + 2 >= strlen src then
+                    abort "unescape: invalid \\xHH"
+                else
+                    let x = findchar "0123456789abcdef" 0 (charat src (i + 1))
+                    let y = findchar "0123456789abcdef" 0 (charat src (i + 2))
+                    let s =
+                        case (x, y)
+                        | (Some x, Some y) -> chartostr (chr (x*16 + y))
+                        | _ -> abort "unescape: invalid \\xHH"
+                    in
+                    (i + 3, s)
+            | c -> (i + 1, chartostr c)
+
+
+let read_file path =
+    case sysopen path O_RDONLY 0
+    | -1 -> None
+    | fd -> Some (readall [])
+        where
+        rec readall out =
+            case sysread fd 65536
+            | "" -> join (rev out)
+            | part -> readall (part : out)
+        endw

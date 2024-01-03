@@ -25,26 +25,27 @@ typedef struct val val;
 typedef enum {
     Teof, Tint, Tchar, Tstring, Tid, Tder, Tlparen, Trparen,
     Tlbrace, Trbrace, Tlcurly, Trcurly, Tcomma, Tdot, Tsemi,
-    Tfn, Toper, Tarrow, Tty, Tlarrow, Tequal, Tas, Talso, Tand,
-    Tcase, Tdatatype, Telse, Tendc, Tendf, Tendw, Tif, Tin,
+    Tfn, Toper, Tarrow, Tty, Tlarrow, Tequal, Tas, Tand, Tcase,
+    Tdatatype, Tdef, Telse, Tendc, Tendf, Tendw, Tif, Tin,
     Tinfixl, Tinfixr, Tlet, Tor, Trec, Tthen, Twith, Twhere, Tbar,
 } t_tok;
 
 char *tokn[] = {
     "eof", "int", "char", "string", "id", "!", "(", ")", "[", "]",
-    "{", "}", ",", ".", ";", "\\", "`", "->", "::", "<-", "=", "@", "also",
-    "and", "case", "datatype", "else", "endc", "endf", "endw", "if", "in",
-    "infixl", "infixr", "let", "or", "rec", "then", "with", "where", "|",
+    "{", "}", ",", ".", ";", "\\", "`", "->", "::", "<-", "=", "@",
+    "and", "case", "datatype", "def", "else", "endc", "endf",
+    "endw", "if", "in", "infixl", "infixr", "let", "or", "rec",
+    "then", "with", "where", "|",
 };
 
 char *sym_chars = "%&$+-/:<=>?@~^|*";
 
 typedef enum hostnum {
     Oadd, Osub, Omul, Odiv, Orem, Opow, Olt, Ogt, Ole, Oge, Oeq, One,
-    Oord, Ochr, Ocharcmp, Oimplode, Ojoin, Ostrlen, Ocharat,
-    Ostrsplice, Osubstr, Ostrcmp, Osubstrcmp, Ofindsubstr, Ofindchar,
-    Oatoi, Oitoa, Oset, Oexit, Oprn, Osrand, Orand, Ogetenviron,
-    Osysopen, Osysclose, Osysread, Osyswrite,
+    Oord, Ochr, Ocharcmp, Oimplode, Ochartostr,Ocat, Ojoin, Ostrlen,
+    Ocharat, Ostrsplice, Osubstr, Ostrcmp, Osubstrcmp, Ofindsubstr,
+    Ofindchar, Oatoi, Oitoa, Oset, Oexit, Oprn, Osrand, Orand,
+    Ogetenviron, Osysopen, Osysclose, Osysread, Osyswrite,
 } hostnum;
 
 struct hostspec {
@@ -70,6 +71,8 @@ hosts[] = {
     [Ochr] = {"chr", "int->char", 1, 0},
     [Ocharcmp] = {"charcmp", "char->char->int", 2, 0},
     [Oimplode] = {"implode", "[char]->string", 1, 0},
+    [Ochartostr] = {"chartostr", "char->string", 1, 0},
+    [Ocat] = {"^", "string->string->string", 2, 0},
     [Ojoin] = {"join", "[string]->string", 1, 0},
     [Ostrlen] = {"strlen", "string->int", 1, 0},
     [Ocharat] = {"charat", "string->int->char", 2, 0},
@@ -881,7 +884,8 @@ t_type *aty(bool required) {
             t_sym *sym = find(toks, all_types);
             t_type *con = sym? sym->type: 0;
             if (!con) error(tokl, "undefined type: %S", toks);
-            if (con->n != 0) error(tokl, "type needs args: %S", toks);
+            if (con->form == Type && con->n != 0)
+                error(tokl, "type needs args: %S", toks);
             return con;
         }
 
@@ -940,7 +944,7 @@ t_type *aty(bool required) {
             for (int i = 0; i < n; i++)
                 ots[order[i]] = ts[i];
 
-            return rectype(n, copy(n, fs), ts, false);
+            return rectype(n, copy(n, ofs), ots, false);
         }
 
     default:
@@ -1358,8 +1362,8 @@ t_exp *expr(void) {
         loc = tokl;
 
         if (want(Twhere)) {
-            want(Talso);
-            t_exp *decs = let(Talso);
+            want(Tdef);
+            t_exp *decs = let(Tdef);
             set_let_body(&decs, e);
             want(Tendw);
             e = decs;
@@ -1769,13 +1773,15 @@ t_type *checkpat(t_exp *e, t_sym **env) {
 
                     else open = true;
                 }
-                else
-                    ts[n++] = checkpat(e->rec.es[i], env);
+                else {
+                    ts[n] = checkpat(e->rec.es[i], env);
+                    e->rec.fs[n] = e->rec.fs[i];
+                    e->rec.es[n] = e->rec.es[i];
+                    ofs[n] = e->rec.fs[i];
+                    n++;
+                }
 
-            for (int i = 0, j = 0; i < e->rec.n; i++)
-                if (e->rec.fs[i] != any_id)
-                    ofs[j++] = e->rec.fs[i];
-
+            e->rec.n = n;
             qsort(ofs, n, sizeof *ofs, cmpstr);
             new_order(n, e->rec.fs, ofs, order);
             for (int i = 0; i < n; i++)
@@ -2127,6 +2133,20 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             return newstr(str);
         }
 
+    case Ochartostr:
+        return newstr(strings[A.c]);
+
+    case Ocat:
+        {
+            if (A.str->len == 0) return B;
+            if (B.str->len == 0) return A;
+
+            string *str = mkstr(0, A.str->len + B.str->len);
+            memcpy(str->txt, A.str->txt, A.str->len);
+            memcpy(str->txt + A.str->len, B.str->txt, B.str->len);
+            return newstr(str);
+        }
+
     case Ojoin:
         {
             int n = 0;
@@ -2257,7 +2277,7 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             if (i < 0 || i >= src->len)
                 error(loc, "findchar: index error: %v", B);
 
-            char *ptr = memchr(src->txt + i, C.c, src->len);
+            char *ptr = memchr(src->txt + i, C.c, src->len - i + 1);
             return ptr? newdata(some_id, newint(ptr - src->txt)): none;
         }
 
@@ -2342,8 +2362,10 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
                 buf = malloc(szbuf);
             }
 
-            val out = read(A.i, buf, sz) > 0?
-                newstr(mkstr(buf, sz)):
+            int n = read(A.i, buf, sz);
+
+            val out = n > 0?
+                newstr(mkstr(buf, n)):
                 newstr(empty_string);
 
             if (szbuf > 64*1024) {
@@ -2414,11 +2436,12 @@ t_env *match(t_exp *p, val x, t_env *env) {
         return p->app.lhs->lit.data->con == x.data->con?
             match(p->app.rhs, x.data->val, env):
             0;
+    case Ety:
+        return match(p->ty.e, x, env);
 
     case Efn:
     case Edot:
     case Ewith:
-    case Ety:
     case Elet:
     case Eletrec:
     case Ecase:

@@ -1,5 +1,5 @@
 .test: paperml
-	time ./paperml test.al
+	./paperml paperml.al test.al
 
 paperml: paperml.c
 	$(CC) `pkg-config --cflags bdw-gc` \
