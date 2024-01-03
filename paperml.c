@@ -5,8 +5,12 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #define copy(N, X) memcpy(malloc((N) * sizeof *(X)), (X), (N) * sizeof *(X))
 #define new(TYPE, ...) (TYPE*) copy(1, (&(TYPE) { __VA_ARGS__ }))
@@ -36,8 +40,11 @@ char *tokn[] = {
 char *sym_chars = "%&$+-/:<=>?@~^|*";
 
 typedef enum hostnum {
-    Oexit, Oprn, Oadd, Osub, Omul, Odiv, Orem, Olt, Ogt, Ole, Oge, Oeq, One,
-    Oord, Ochr, Oimplode, Ojoin, Ostrlen, Ocharat, Osubstr,
+    Oadd, Osub, Omul, Odiv, Orem, Opow, Olt, Ogt, Ole, Oge, Oeq, One,
+    Oord, Ochr, Ocharcmp, Oimplode, Ojoin, Ostrlen, Ocharat,
+    Ostrsplice, Osubstr, Ostrcmp, Osubstrcmp, Ofindsubstr, Ofindchar,
+    Oatoi, Oitoa, Oset, Oexit, Oprn, Osrand, Orand, Ogetenviron,
+    Osysopen, Osysclose, Osysread, Osyswrite,
 } hostnum;
 
 struct hostspec {
@@ -47,13 +54,12 @@ struct hostspec {
     t_type *type;
 }
 hosts[] = {
-    [Oexit] = {"exit", "int->a", 1, 0},
-    [Oprn] = {"prn", "a->a", 1, 0},
     [Oadd] = {"+", "int->int->int", 2, 0},
     [Osub] = {"-", "int->int->int", 2, 0},
     [Omul] = {"*", "int->int->int", 2, 0},
     [Odiv] = {"/", "int->int->int", 2, 0},
     [Orem] = {"rem", "int->int->int", 2, 0},
+    [Opow] = {"**", "int->int->int", 2, 0},
     [Olt] = {"<", "int->int->bool", 2, 0},
     [Ogt] = {">", "int->int->bool", 2, 0},
     [Ole] = {"<=", "int->int->bool", 2, 0},
@@ -62,11 +68,29 @@ hosts[] = {
     [One] = {"<>", "a->a->bool", 2, 0},
     [Oord] = {"ord", "char->int", 1, 0},
     [Ochr] = {"chr", "int->char", 1, 0},
+    [Ocharcmp] = {"charcmp", "char->char->int", 2, 0},
     [Oimplode] = {"implode", "[char]->string", 1, 0},
     [Ojoin] = {"join", "[string]->string", 1, 0},
     [Ostrlen] = {"strlen", "string->int", 1, 0},
     [Ocharat] = {"charat", "string->int->char", 2, 0},
+    [Ostrsplice] = {"strsplice", "string->int->int->[string]->string", 4, 0},
     [Osubstr] = {"substr", "string->int->int->string", 3, 0},
+    [Ostrcmp] = {"strcmp", "string->string->int", 2, 0},
+    [Osubstrcmp] = {"substrcmp", "string->int->string->int->int->int", 5, 0},
+    [Ofindsubstr] = {"findsubstr", "string->int->string->int->int->int option", 5, 0},
+    [Ofindchar] = {"findchar", "string->int->char->int option", 3, 0},
+    [Oatoi] = {"atoi", "string->int", 1, 0},
+    [Oitoa] = {"itoa", "int->string", 1, 0},
+    [Oset] = {":=", "a ref->a->a", 2, 0},
+    [Oexit] = {"exit", "int->a", 1, 0},
+    [Oprn] = {"prn", "a->a", 1, 0},
+    [Osrand] = {"srand", "int->()", 1, 0},
+    [Orand] = {"rand", "()->int", 1, 0},
+    [Ogetenviron] = {"getenviron", "()->(string,string) list", 1, 0},
+    [Osysopen] = {"sysopen", "string->int->int->int", 3, 0},
+    [Osysclose] = {"sysclose", "int->int", 1, 0},
+    [Osysread] = {"sysread", "int->int->string", 2, 0},
+    [Osyswrite] = {"syswrite", "int->string->int", 2, 0},
 };
 
 struct val {
@@ -196,6 +220,7 @@ string *empty_string;
 string *any_id;
 string *cons_id;
 string *ref_id;
+string *some_id;
 
 t_loc tokl;
 char source[65536];
@@ -226,12 +251,18 @@ t_type *chartype;
 t_type *stringtype;
 t_type *listtype;
 t_type *reftype;
+t_type *opttype;
 
 val unit;
 val nil;
 val falsev;
 val truev;
-val refcon;
+val none;
+
+uint32_t randst[] = {
+    123456789, 362436069, 521288629, 88675123, 5783321, 6615241
+};
+uint32_t randseed = 362437;
 
 
 void *print(char *msg, ...);
@@ -1327,6 +1358,7 @@ t_exp *expr(void) {
         loc = tokl;
 
         if (want(Twhere)) {
+            want(Talso);
             t_exp *decs = let(Talso);
             set_let_body(&decs, e);
             want(Tendw);
@@ -1771,7 +1803,7 @@ t_type *checkpat(t_exp *e, t_sym **env) {
             t_exp *f = e->app.lhs;
             t_exp *x = e->app.rhs;
 
-            if (f->form != Elit && f->lit.form != Data) goto invalid;
+            if (f->form != Elit || f->lit.form != Data) goto invalid;
 
             t_type *ft = fresh(find(f->lit.data->con, all_cons)->type, 0);
             t_type *xt = checkpat(x, env);
@@ -2036,23 +2068,38 @@ bool equal(val a, val b) {
     }
 }
 
-val evalhost(t_loc loc, hostnum op, val *a) {
-    #define A a[0]
-    #define B a[1]
-    #define C a[2]
+val evalhost(t_loc loc, hostnum op, val *ap) {
+    #define A ap[0]
+    #define B ap[1]
+    #define C ap[2]
+    #define D ap[3]
+    #define E ap[4]
 
     switch (op) {
     case Oprn:
-        if (a->form == String) print("%S", a->str);
-        else if (a->form == Char) putchar(a->c);
-        else print("%v", *a);
-        return *a;
+        if (ap->form == String) print("%S", ap->str);
+        else if (ap->form == Char) putchar(ap->c);
+        else print("%v", *ap);
+        return *ap;
 
     case Oadd: return newint(A.i + B.i);
     case Osub: return newint(A.i - B.i);
     case Omul: return newint(A.i * B.i);
-    case Odiv: return newint(A.i / B.i);
-    case Orem: return newint(A.i % B.i);
+    case Odiv:
+        if (B.i == 0) error(loc, "/: division by zero");
+        return newint(A.i / B.i);
+    case Orem:
+        if (B.i == 0) error(loc, "rem: division by zero");
+        return newint(A.i % B.i);
+
+    case Opow:
+        {
+            int n = A.i;
+            if (B.i == 0) return newint(1);
+            if (B.i < 0) error(loc, "**: negative exponent");
+            for (int i = 1; i < B.i; i++) n += n;
+            return newint(n);
+        }
     case Olt: return A.i < B.i? truev: falsev;
     case Ogt: return A.i > B.i? truev: falsev;
     case Ole: return A.i <= B.i? truev: falsev;
@@ -2062,6 +2109,7 @@ val evalhost(t_loc loc, hostnum op, val *a) {
     case Oexit: exit(A.i);
     case Oord: return newint(A.c);
     case Ochr: return newchar(abs(A.i) % 255);
+    case Ocharcmp: return newint(A.c - B.c);
 
     case Oimplode:
         {
@@ -2114,15 +2162,216 @@ val evalhost(t_loc loc, hostnum op, val *a) {
             string *str = A.str;
             int i = B.i;
             int n = C.i;
+
             if (i < 0) i += str->len;
             if (n < 0) n = str->len + n - i + 1;
+
             if (i < 0 || i >= str->len || n < 0 || i + n > str->len)
                 error(loc, "substr: index error: %v %v", B, C);
+
             if (n == 0) return newstr(empty_string);
+
+            if (i == 0 && n == str->len) return A;
+
             return newstr(mkstr(str->txt + i, n));
         }
 
+    case Ostrcmp:
+        {
+            if (A.str == B.str) return newint(0);
 
+            int n = A.str->len < B.str->len? A.str->len: B.str->len;
+            int r = memcmp(A.str->txt, B.str->txt, n);
+
+            return newint(r? r:
+                    A.str->len < B.str->len? -1:
+                    A.str->len == B.str->len? 0:
+                    1);
+        }
+
+    case Osubstrcmp:
+        {
+            string *a = A.str;
+            int ai = B.i;
+            string *b = C.str;
+            int bi = D.i;
+            int n = E.i;
+
+            if (ai < 0) ai += a->len;
+            if (bi < 0) bi += b->len;
+            if (n < 0) n = b->len + n - bi + 1;
+
+            if (ai < 0 || ai + n > a->len || bi < 0 || bi + n > b->len)
+                error(loc, "substrcmp: index error: %v %v %v", B, D, E);
+
+            if (a == b) return newint(0); // Must come after checks.
+
+            int r = memcmp(a->txt + ai, b->txt + bi, n);
+            return newint(r? r: 0);
+        }
+
+    case Ofindsubstr:
+        {
+            string *a = A.str;
+            int ai = B.i;
+            string *b = C.str;
+            int bi = D.i;
+            int n = E.i;
+
+            if (ai < 0) ai += a->len;
+            if (bi < 0) bi += b->len;
+            if (n < 0) n = b->len + n - bi + 1;
+
+            if (ai < 0 || ai >= a->len || bi < 0 || bi >= b->len || bi + n > b->len)
+                error(loc, "findsubstr: index error: %v %v %v", B, D, E);
+
+            if (n == 0) return none; // Cannot find empty string.
+            if (n == 1) {
+                char *ptr = memchr(a->txt + ai, b->txt[bi], a->len - n + 1);
+                return ptr? newdata(some_id, newint(ptr - a->txt)): none;
+            }
+
+            char *ptr = a->txt + ai;
+            char *end = a->txt + a->len - n + 1;
+
+            while (ptr < end) {
+
+                ptr = memchr(ptr, b->txt[bi], end - ptr);
+
+                if (!ptr) return none;
+
+                if (!memcmp(ptr, b->txt + bi, n))
+                    return newdata(some_id, newint(ptr - a->txt));
+
+                ptr++;
+            }
+            return none;
+        }
+
+    case Ofindchar:
+        {
+            string *src = A.str;
+            int i = B.i;
+
+            if (i < 0) i += src->len;
+            if (i < 0 || i >= src->len)
+                error(loc, "findchar: index error: %v", B);
+
+            char *ptr = memchr(src->txt + i, C.c, src->len);
+            return ptr? newdata(some_id, newint(ptr - src->txt)): none;
+        }
+
+    case Ostrsplice:
+        {
+            string *src = A.str;
+            int at = B.i;
+            int dn = C.i;
+
+            if (at < 0) at += src->len;
+            if (dn < 0) dn = src->len + dn - at + 1;
+            if (at < 0 || at > src->len || dn < 0 || at + dn > src->len)
+                error(loc, "strsplice: index error: %v %v", B, C);
+
+            int m = 0;
+            for (struct list *i = D.list; i; i = i->tl)
+                m += i->hd.str->len;
+
+            string *str = mkstr(0, src->len - dn + m);
+            memcpy(str->txt, src->txt, at);
+            memcpy(str->txt + at + m, src->txt + at + dn, src->len - at - dn);
+
+            m = at;
+            for (struct list *i = D.list; i; i = i->tl) {
+                memcpy(str->txt + m, i->hd.str->txt, i->hd.str->len);
+                m += i->hd.str->len;
+            }
+            return newstr(str);
+        }
+
+    case Oatoi: return newint(strtol(A.str->txt, 0, 10));
+
+    case Oitoa:
+        {
+            char buf[32];
+            int len = snprintf(buf, sizeof buf, "%d", A.i);
+            return newstr(mkstr(buf, len));
+        }
+
+    case Oset: return (A.data->val = B);
+
+    case Ogetenviron:
+        {
+            extern char **environ;
+            val list = nil;
+            int n = 0;
+            for (char **i = environ; *i; i++) n++;
+            for (char **i = environ + n; --i > environ; ) {
+                char *spec = *i;
+                int keylen = strcspn(spec, "=");
+                val key = newstr(intern(spec, keylen));
+                val value = spec[keylen]?
+                    newstr(intern(spec + keylen + 1, -1)):
+                    newstr(empty_string);
+                list = cons(newtup(2, (val[]) { key, value }), list.list);
+            }
+            return list;
+        }
+
+    case Osysopen:
+        {
+            int mode =
+                ((C.i / 1000 % 10) << 3*3) +
+                ((C.i / 100 % 10) << 3*2) +
+                ((C.i / 10 % 10) << 3*1) +
+                ((C.i / 1 % 10) << 3*0);
+            return newint(open(A.str->txt, B.i, mode));
+        }
+
+    case Osysclose: return newint(close(A.i));
+
+    case Osysread:
+        {
+            static char *buf;
+            static int szbuf;
+
+            int sz = B.i;
+            if (sz < 0) return newint(-1);
+
+            if (sz > szbuf) {
+                szbuf = sz;
+                buf = malloc(szbuf);
+            }
+
+            val out = read(A.i, buf, sz) > 0?
+                newstr(mkstr(buf, sz)):
+                newstr(empty_string);
+
+            if (szbuf > 64*1024) {
+                szbuf = 0;
+                free(buf);
+            }
+
+            return out;
+        }
+
+    case Osyswrite: return newint(write(A.i, B.str->txt, B.str->len));
+
+    case Osrand:
+        randseed = A.i;
+        return unit;
+
+    case Orand:
+        {
+            // xorwow algorithm.
+            uint32_t t;
+            t = (randst[0] ^ (randst[0] >> 2));
+            randst[0] = randst[1];
+            randst[1] = randst[2];
+            randst[2] = randst[3];
+            randst[3] = randst[4];
+            randst[4] = (randst[4] ^ (randst[4] << 4)) ^ (t ^ (t << 1));
+            return newint(abs((int) ((randst[5] += randseed) + randst[4])));
+        }
     }
 }
 
@@ -2310,6 +2559,7 @@ int main(int argc, char **argv) {
     any_id = intern("_", -1);
     cons_id = intern(":", -1);
     ref_id = intern("ref", -1);
+    some_id = intern("Some", -1);
 
     t_type *a = polyvar(0);
     unittype = tuptype(0, 0);
@@ -2319,6 +2569,7 @@ int main(int argc, char **argv) {
     stringtype = typecon(intern("string", -1), 0, 0);
     listtype = typecon(intern("list", -1), 1, &a);
     reftype = typecon(intern("ref", -1), 1, &a);
+    opttype = typecon(intern("option", -1), 1, &a);
 
     define(&all_types, intern("unit", -1), unittype);
     define(&all_types, booltype->id, booltype);
@@ -2327,16 +2578,19 @@ int main(int argc, char **argv) {
     define(&all_types, stringtype->id, stringtype);
     define(&all_types, listtype->id, listtype);
     define(&all_types, ref_id, reftype);
+    define(&all_types, opttype->id, opttype);
 
     unit = newtup(0, 0);
     nil = (val) { List, .list=0 };
     falsev = newdata(intern("false", -1), unit);
     truev = newdata(intern("true", -1), unit);
-    refcon = newdata(intern("ref", -1), unit);
+    none = newdata(intern("None", -1), unit);
 
     define_val(&all_cons, falsev.data->con, booltype, falsev);
     define_val(&all_cons, truev.data->con, booltype, truev);
-    define_val(&all_cons, refcon.data->con, fntype(a, reftype), refcon);
+    define_val(&all_cons, ref_id, fntype(a, reftype), newdata(ref_id, unit));
+    define_val(&all_cons, none.data->con, opttype, newdata(none.data->con, unit));
+    define_val(&all_cons, some_id, fntype(a, opttype), newdata(some_id, unit));
 
     forced_op = new(t_op, intern("`", -1), 10, 11, 0);
     and_op = ops = new(t_op, intern("and", -1), 3, 3, ops);
@@ -2348,7 +2602,7 @@ int main(int argc, char **argv) {
     char *boot =
         "infixl 10\n"
         "infixl 9                    # `\n"
-        "infixr 9 of\n"
+        "infixr 9 ** of\n"
         "infixl 8 * / rem\n"
         "infixl 7 + - ^\n"
         "infixr 6 :\n"
@@ -2358,12 +2612,21 @@ int main(int argc, char **argv) {
         "infixr 2                    # or\n"
         "infixl 1 &\n"
         "infixr 0 $\n"
-        "datatype option with a = None | Some a\n"
     ;
     setsrc("boot", boot);
     top(&e);
 
     t_sym *senv = 0;
+
+    define_val(&senv, intern("O_RDONLY", -1), inttype, newint(O_RDONLY));
+    define_val(&senv, intern("O_WRONLY", -1), inttype, newint(O_WRONLY));
+    define_val(&senv, intern("O_RDWR", -1), inttype, newint(O_RDWR));
+    define_val(&senv, intern("O_EXCL", -1), inttype, newint(O_EXCL));
+    define_val(&senv, intern("O_NONBLOCK", -1), inttype, newint(O_NONBLOCK));
+    define_val(&senv, intern("O_CREAT", -1), inttype, newint(O_CREAT));
+    define_val(&senv, intern("O_TRUNC", -1), inttype, newint(O_TRUNC));
+    define_val(&senv, intern("O_SYNC", -1), inttype, newint(O_SYNC));
+
     define(&all_types, intern("a", -1), a);
     for (size_t i = 0; i < sizeof hosts / sizeof *hosts; i++) {
         struct hostspec h = hosts[i];
@@ -2373,6 +2636,18 @@ int main(int argc, char **argv) {
             newhost(i, intern(h.id, -1), 0, h.arity, 0));
     }
     all_types = all_types->next;
+
+    if (argc == 1) {
+        print("usage: %s FILE ARUMENTS\n", argv[1]? argv[1]: "paperml");
+        exit(0);
+    }
+
+    // Set argv.
+    val args = nil;
+    for (int i = argc; --i; )
+        args = cons(newstr(intern(argv[i], -1)), args.list);
+    define_val(&senv, intern("argv", -1),
+        typecon(listtype->id, 1, &stringtype), args);
 
     opensrc("std.al");
     top(&e);
