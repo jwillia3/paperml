@@ -27,7 +27,6 @@ let (tokenise :: string -> string -> [token]) = \path src ->
         | _ -> false
 
     let resv = [
-        "!",
         "->",
         "::",
         "=",
@@ -38,6 +37,8 @@ let (tokenise :: string -> string -> [token]) = \path src ->
         "else",
         "endc",
         "endw",
+        "exception",
+        "except",
         "if",
         "in",
         "infixl",
@@ -52,8 +53,8 @@ let (tokenise :: string -> string -> [token]) = \path src ->
     ]
 
     let isid c = isalnum c or c == '_' or c == '\''
-    let issym c = issome (findchar "%&$+-/:<=>?@~^|*" 0 c)
-    let ispun c = issome (findchar "!()[]{},.;\\`" 0 c)
+    let issym c = issome (findchar "%&$+-/:<=>?@~^|*" c)
+    let ispun c = issome (findchar "!()[]{},.;\\`" c)
     let quoted q c =
         if c == '\\' then
             incr index;
@@ -143,6 +144,8 @@ datatype ast =
     | Acase (loc, ast, (ast, ast) list)
     | Aty (loc, ast, tyexp)
     | Aseq (loc, ast, ast)
+    | Aexception (loc, string, ast)
+    | Aexcept (loc, ast, (string, ast, ast) list)
 
 let locof ast = case ast
     | Aint (loc, _) -> loc
@@ -166,6 +169,8 @@ let locof ast = case ast
     | Acase (loc, _, _) -> loc
     | Aty (loc, _, _) -> loc
     | Aseq (loc, _, _) -> loc
+    | Aexception (loc, _, _) -> loc
+    | Aexcept (loc, _, _) -> loc
 
 let rec set_let_body e body = case e
     | Alet (loc, lhs, rhs, e') -> Alet (loc, lhs, rhs, set_let_body e' body)
@@ -177,7 +182,7 @@ datatype dtd =
     | DTalias (loc, [id], tyexp)
     | DTdec (loc, [id], [(loc, id, tyexp option)])
 
-datatype pstate :: {e::ast, dtds::[dtd]}
+datatype pstate :: {e::ast, dtds::[dtd], exns::[(id, tyexp)]}
 
 let parse (tokens::[token]) =
     let src = ref tokens
@@ -246,6 +251,7 @@ let parse (tokens::[token]) =
         | "infixl" -> infix_dec true; top st
         | "infixr" -> infix_dec false; top st
         | "datatype" -> top (datatype_dec st)
+        | "exception" -> top (exn_dec st)
         | "let" -> top (st with {e = set_let_body st.e (_let "let")})
         | "eof" -> st
         | _ -> error loc "need top-level declaration"
@@ -275,6 +281,12 @@ let parse (tokens::[token]) =
                 DTdec (loc, tvs, need "="; want "|"; dc () : seq dc')
         in
         st with {dtds = st.dtds ++ [dec]}
+
+    rec exn_dec st =
+        let {loc, txt=id, _} = need "id"
+        let t = if want "with" then ty () else TEtuple (loc, [])
+        in
+        st with {exns = st.exns ++ [(id, t)]}
 
     rec dc' () =
         if want "|" then Some (dc ()) else None
@@ -319,6 +331,12 @@ let parse (tokens::[token]) =
                 want "endc";
                 e
 
+            | "exception" ->
+                Aexception (
+                    loc,
+                    (need "id").txt,
+                    if want "with" then aexp () else Atuple (loc, []))
+
             | _ ->
                 unget tok;
                 iexp ()
@@ -338,6 +356,13 @@ let parse (tokens::[token]) =
 
             | {type=";", loc, _} ->
                 Some (Aseq (loc, e, exp ()))
+
+            | {type="except", loc, _} ->
+                let r = want "|"; exceptrule ()
+                let rs =
+                    seq (\_-> if want "|" then Some (exceptrule ()) else None)
+                in
+                Some (Aexcept (loc, e, r : rs))
 
             | tok ->
                 unget tok;
@@ -456,6 +481,12 @@ let parse (tokens::[token]) =
 
     rec rule () = if want "|" then Some (exp (), need "->"; exp ()) else None
 
+    rec exceptrule () =
+        let {loc, txt=id, _} = next ()
+        let arg = if want "with" then aexp () else Atuple (loc, [])
+        in
+        (id, arg, need "->"; exp ())
+
     rec opt_ty () =
         if (case (hd !src).type
             | "id" -> true
@@ -522,12 +553,12 @@ let parse (tokens::[token]) =
 
     in
     mark_infixes ();
-    top {e=dummy (), dtds=[]}
+    top {e=dummy (), dtds=[], exns=[]}
 
 
 let path = "test.al"
-let path = "std.al"
-let path = "paperml.al"
+# let path = "std.al"
+# let path = "paperml.al"
 let Some src = read_file path
 
-let main = tokenise path src & parse & print
+let main = tokenise path src & parse; print "done!"

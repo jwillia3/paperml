@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -26,16 +27,17 @@ typedef enum {
     Teof, Tint, Tchar, Tstring, Tid, Tder, Tlparen, Trparen,
     Tlbrace, Trbrace, Tlcurly, Trcurly, Tcomma, Tdot, Tsemi,
     Tfn, Toper, Tarrow, Tty, Tlarrow, Tequal, Tas, Tand, Tcase,
-    Tdatatype, Tdef, Telse, Tendc, Tendf, Tendw, Tif, Tin,
-    Tinfixl, Tinfixr, Tlet, Tor, Trec, Tthen, Twith, Twhere, Tbar,
+    Tdatatype, Tdef, Telse, Tendc, Tendf, Tendw, Texcept, Texception,
+    Tif, Tin, Tinfixl, Tinfixr, Tlet, Tor, Trec, Tthen, Twith, Twhere,
+    Tbar,
 } t_tok;
 
 char *tokn[] = {
     "eof", "int", "char", "string", "id", "!", "(", ")", "[", "]",
     "{", "}", ",", ".", ";", "\\", "`", "->", "::", "<-", "=", "@",
     "and", "case", "datatype", "def", "else", "endc", "endf",
-    "endw", "if", "in", "infixl", "infixr", "let", "or", "rec",
-    "then", "with", "where", "|",
+    "endw", "except", "exception", "if", "in", "infixl", "infixr",
+    "let", "or", "rec", "then", "with", "where", "|",
 };
 
 char *sym_chars = "%&$+-/:<=>?@~^|*";
@@ -81,7 +83,7 @@ hosts[] = {
     [Ostrcmp] = {"strcmp", "string->string->int", 2, 0},
     [Osubstrcmp] = {"substrcmp", "string->int->string->int->int->int", 5, 0},
     [Ofindsubstr] = {"findsubstr", "string->int->string->int->int->int option", 5, 0},
-    [Ofindchar] = {"findchar", "string->int->char->int option", 3, 0},
+    [Ofindchar] = {"findchar'", "string->int->char->int option", 3, 0},
     [Oatoi] = {"atoi", "string->int", 1, 0},
     [Oitoa] = {"itoa", "int->string", 1, 0},
     [Oset] = {":=", "a ref->a->a", 2, 0},
@@ -146,10 +148,30 @@ typedef struct t_openrec {
     struct t_openrec *next;
 } t_openrec;
 
+#define elit(LOC, LIT) new(t_exp, Elit, LOC, .lit=LIT)
+#define evar(LOC, ID) new(t_exp, Evar, LOC, .var=ID)
+#define elist(LOC, HD, TL) new(t_exp, Elist, LOC, .list={HD, TL})
+#define etup(LOC, N, ES) new(t_exp, Etup, LOC, .tup={N, ES})
+#define erec(LOC, N, FS, ES) new(t_exp, Erec, LOC, .rec={N, FS, ES})
+#define eder(LOC, E) new(t_exp, Eder, LOC, .der=E)
+#define efn(LOC, ID, PAR, E) new(t_exp, Efn, LOC, .fn={ID, PAR, E})
+#define edot(LOC, E, ID) new(t_exp, Edot, LOC, .dot={E, ID})
+#define ewith(LOC, E, MODS) new(t_exp, Ewith, LOC, .with={E, MODS})
+#define eapp(LOC, F, X) new(t_exp, Eapp, LOC, .app={F, X})
+#define ecase(LOC, E, RS) new(t_exp, Ecase, LOC, ._case={E, RS})
+#define eif(LOC, C, T, F) new(t_exp, Eif, LOC, ._if={C, T, F})
+#define elet(LOC, ID, RHS, E) new(t_exp, Elet, LOC, .let={ID, RHS, E})
+#define eletrec(LOC, DS, E) new(t_exp, Eletrec, LOC, .letrec={DS, E})
+#define ety(LOC, E, T) new(t_exp, Ety, LOC, .ty={E, T})
+#define eseq(LOC, E, F) new(t_exp, Eseq, LOC, .seq={E, F})
+#define eas(LOC, E, ID) new(t_exp, Eas, LOC, .as={E, ID})
+#define eexception(LOC, ID, E) new(t_exp, Eexception, LOC, .exception={ID, E})
+#define eexcept(LOC, E, RS) new(t_exp, Eexcept, LOC, .except={E, RS})
+
 struct t_exp {
     enum {
         Elit, Evar, Elist, Etup, Erec, Eder, Efn, Edot, Ewith, Eapp, Ety, Elet,
-        Eletrec, Ecase, Eif, Eseq, Eas,
+        Eletrec, Ecase, Eif, Eseq, Eas, Eexcept, Eexception,
     } form;
 
     t_loc loc;
@@ -172,6 +194,8 @@ struct t_exp {
         struct { t_exp *e; struct t_rules *rs; } _case;
         struct { t_exp *c, *t, *f; } _if;
         struct { t_exp *lhs, *rhs; } seq;
+        struct { t_exp *e; struct t_erules *rs; } except;
+        struct { string *id; t_exp *e; } exception;
     };
 };
 
@@ -187,6 +211,13 @@ typedef struct t_rules {
     t_exp *rhs;
     struct t_rules *next;
 } t_rules;
+
+typedef struct t_erules {
+    string *id;
+    t_exp *arg;
+    t_exp *rhs;
+    struct t_erules *next;
+} t_erules;
 
 typedef struct t_clauses {
     t_loc loc;
@@ -224,6 +255,12 @@ string *any_id;
 string *cons_id;
 string *ref_id;
 string *some_id;
+string *match_id;
+string *division_id;
+string *exponent_id;
+string *index_id;
+string *size_id;
+string *empty_id;
 
 t_loc tokl;
 char source[65536];
@@ -246,6 +283,7 @@ t_openrec *openrecs;
 
 t_sym *all_types;
 t_sym *all_cons;
+t_sym *all_exns;
 
 t_type *unittype;
 t_type *booltype;
@@ -261,6 +299,11 @@ val nil;
 val falsev;
 val truev;
 val none;
+
+jmp_buf *exn_buf;
+string *exn_id;
+val exn_arg;
+t_loc exn_loc;
 
 uint32_t randst[] = {
     123456789, 362436069, 521288629, 88675123, 5783321, 6615241
@@ -558,6 +601,17 @@ t_type *follow(t_type *t) {
     return t->form == Typevar && *t->ts? follow(*t->ts): t;
 }
 
+bool has_typevar(t_type *t) {
+    t = follow(t);
+
+    if (t->form == Typevar || t->form == Polyvar) return true;
+
+    for (int i = 0; i < t->n; i++)
+        if (has_typevar(t->ts[i])) return true;
+
+    return false;
+}
+
 // Name typevars before printing.
 t_type *nametvs(t_type *t, int *uid) {
     t = follow(t);
@@ -760,24 +814,6 @@ string *need(t_tok t) {
     return toks;
 }
 
-#define elit(LOC, LIT) new(t_exp, Elit, LOC, .lit=LIT)
-#define evar(LOC, ID) new(t_exp, Evar, LOC, .var=ID)
-#define elist(LOC, HD, TL) new(t_exp, Elist, LOC, .list={HD, TL})
-#define etup(LOC, N, ES) new(t_exp, Etup, LOC, .tup={N, ES})
-#define erec(LOC, N, FS, ES) new(t_exp, Erec, LOC, .rec={N, FS, ES})
-#define eder(LOC, E) new(t_exp, Eder, LOC, .der=E)
-#define efn(LOC, ID, PAR, E) new(t_exp, Efn, LOC, .fn={ID, PAR, E})
-#define edot(LOC, E, ID) new(t_exp, Edot, LOC, .dot={E, ID})
-#define ewith(LOC, E, MODS) new(t_exp, Ewith, LOC, .with={E, MODS})
-#define eapp(LOC, F, X) new(t_exp, Eapp, LOC, .app={F, X})
-#define ecase(LOC, E, RS) new(t_exp, Ecase, LOC, ._case={E, RS})
-#define eif(LOC, C, T, F) new(t_exp, Eif, LOC, ._if={C, T, F})
-#define elet(LOC, ID, RHS, E) new(t_exp, Elet, LOC, .let={ID, RHS, E})
-#define eletrec(LOC, DS, E) new(t_exp, Eletrec, LOC, .letrec={DS, E})
-#define ety(LOC, E, T) new(t_exp, Ety, LOC, .ty={E, T})
-#define eseq(LOC, E, F) new(t_exp, Eseq, LOC, .seq={E, F})
-#define eas(LOC, E, ID) new(t_exp, Eas, LOC, .as={E, ID})
-
 t_exp *aexp(bool required);
 
 void *printexp(t_exp *e, bool paren) {
@@ -803,6 +839,8 @@ void *printexp(t_exp *e, bool paren) {
         case Eif:
         case Eseq:
         case Eas:
+        case Eexcept:
+        case Eexception:
             return print("(%e)", e);
         }
     }
@@ -866,6 +904,14 @@ void *printexp(t_exp *e, bool paren) {
 
     case Eas: return print("%e @ %S", e->as.e, e->as.id);
 
+    case Eexcept:
+        print("%e except");
+        for (t_erules *r = e->except.rs; r; r = r->next)
+            print(" | %S with %e -> %e", r->id, r->arg, r->rhs);
+        return 0;
+
+    case Eexception:
+        return print("exception %S with %e", e->exception.id, e->exception.e);
     }
 }
 
@@ -1353,6 +1399,14 @@ t_exp *expr(void) {
             break;
         }
 
+    case Texception:
+        {
+            string *exn = need(Tid);
+            t_exp *arg = want(Twith)? aexp(true): elit(loc, unit);
+            e = eexception(loc, exn, arg);
+            break;
+        }
+
     default:
         peeked = true;
         e = iexp(0);
@@ -1372,6 +1426,23 @@ t_exp *expr(void) {
         else if (want(Tty)) e = ety(loc, e, ty());
 
         else if (want(Tsemi)) e = eseq(loc, e, expr());
+
+        else if (want(Texcept)) {
+            t_erules *rs = 0;
+            t_erules **p = &rs;
+
+            want(Tbar);
+
+            do {
+                string *id = need(Tid);
+                t_exp *arg = want(Twith)? aexp(true): elit(tokl, unit);
+                t_exp *rhs = (need(Tarrow), expr());
+                *p = new(t_erules, id, arg, rhs, 0);
+                p = &(*p)->next;
+            } while (want(Tbar));
+
+            e = eexcept(loc, e, rs);
+        }
 
         else break;
     }
@@ -1414,6 +1485,7 @@ void datatype_dec(void) {
         for (int i = 0; i < n; i++) define(&all_types, ts[i]->id, ts[i]);
 
         do {
+
             string *id = need(Tid);
 
             if (find(id, all_cons)) error(tokl, "redefining con: %S", id);
@@ -1430,11 +1502,25 @@ void datatype_dec(void) {
     }
 }
 
+void exn_dec(void) {
+    string *id = need(Tid);
+
+    if (find(id, all_exns)) error(tokl, "redefining exception: %S", id);
+
+    t_loc loc = tokl;
+    t_type *t = want(Twith)? ty(): unittype;
+
+    if (has_typevar(t)) error(loc, "exceptions cannot have typevars");
+
+    define(&all_exns, id, t);
+}
+
 void top(t_exp **e) {
     while (!peek(Teof))
         if (want(Tinfixl)) infix_dec(true);
         else if (want(Tinfixr)) infix_dec(false);
         else if (want(Tdatatype)) datatype_dec();
+        else if (want(Texception)) exn_dec();
         else if (want(Tlet)) set_let_body(e, let(Tlet));
         else error(tokl, "need top-level declaration");
 }
@@ -1716,6 +1802,8 @@ bool nonexpansive(t_exp *e) {
     case Eif:
     case Eseq:
     case Eas:
+    case Eexception:
+    case Eexcept:
         return false;
     }
 }
@@ -1832,6 +1920,8 @@ t_type *checkpat(t_exp *e, t_sym **env) {
     case Ecase:
     case Eif:
     case Eseq:
+    case Eexcept:
+    case Eexception:
 
         invalid:
 
@@ -1994,6 +2084,41 @@ t_type *check(t_exp *e, t_sym *env) {
 
     case Eas:
         return error(e->loc, "@ is not usable as an expression");
+
+    case Eexception:
+        {
+            t_sym *sym = find(e->exception.id, all_exns);
+            if (!sym) error(e->loc, "undefined exception: %S", e->exception.id);
+            t = check(e->exception.e, env);
+            unify(e->exception.e->loc, sym->type, t);
+            return typevar(0);
+        }
+
+    case Eexcept:
+        t = check(e->except.e, env);
+        for (t_erules *r = e->except.rs; r; r = r->next) {
+
+            if (r->id == match_id) {
+                if (r->arg->form != Evar || r->arg->var != any_id)
+                    error(e->loc, "match can only be handled with arg _");
+
+                u = check(r->rhs, env);
+                unify(r->rhs->loc, t, u);
+            }
+            else {
+                t_sym *sym = find(r->id, all_exns);
+
+                if (!sym) error(e->loc, "undefined exception: %S", r->id);
+
+                t_sym *local = env;
+                u = checkpat(r->arg, &local);
+                unify(r->arg->loc, sym->type, u);
+
+                u = check(r->rhs, local);
+                unify(r->rhs->loc, t, u);
+            }
+        }
+        return t;
     }
 
     return error(e->loc, "UNIMPLEMENTED");
@@ -2074,6 +2199,18 @@ bool equal(val a, val b) {
     }
 }
 
+val exception(t_loc loc, string *id, val arg) {
+    exn_id = id;
+    exn_arg = arg;
+    exn_loc = loc;
+
+    if (exn_buf)
+        longjmp(*exn_buf, 1);
+
+    print("exception %l: %S with %v\n", loc, id, arg);
+    exit(-1);
+}
+
 val evalhost(t_loc loc, hostnum op, val *ap) {
     #define A ap[0]
     #define B ap[1]
@@ -2091,18 +2228,14 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
     case Oadd: return newint(A.i + B.i);
     case Osub: return newint(A.i - B.i);
     case Omul: return newint(A.i * B.i);
-    case Odiv:
-        if (B.i == 0) error(loc, "/: division by zero");
-        return newint(A.i / B.i);
-    case Orem:
-        if (B.i == 0) error(loc, "rem: division by zero");
-        return newint(A.i % B.i);
+    case Odiv: return B.i? newint(A.i / B.i): exception(loc, division_id, A);
+    case Orem: return B.i? newint(A.i % B.i): exception(loc, division_id, A);
 
     case Opow:
         {
             int n = A.i;
             if (B.i == 0) return newint(1);
-            if (B.i < 0) error(loc, "**: negative exponent");
+            if (B.i < 0) return exception(loc, exponent_id, B);
             for (int i = 1; i < B.i; i++) n += n;
             return newint(n);
         }
@@ -2172,8 +2305,7 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             string *str = A.str;
             int i = B.i;
             if (i < 0) i += str->len;
-            if (i < 0 || i >= str->len)
-                error(loc, "charat: index error: %v", B);
+            if (i < 0 || i >= str->len) exception(loc, index_id, B);
             return newchar(str->txt[i]);
         }
 
@@ -2186,8 +2318,9 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             if (i < 0) i += str->len;
             if (n < 0) n = str->len + n - i + 1;
 
-            if (i < 0 || i >= str->len || n < 0 || i + n > str->len)
-                error(loc, "substr: index error: %v %v", B, C);
+            if (i < 0 || i >= str->len) exception(loc, index_id, B);
+
+            if (n < 0 || i + n > str->len) exception(loc, size_id, C);
 
             if (n == 0) return newstr(empty_string);
 
@@ -2221,8 +2354,10 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             if (bi < 0) bi += b->len;
             if (n < 0) n = b->len + n - bi + 1;
 
-            if (ai < 0 || ai + n > a->len || bi < 0 || bi + n > b->len)
-                error(loc, "substrcmp: index error: %v %v %v", B, D, E);
+            if (ai < 0 || ai > a->len) exception(loc, index_id, B);
+            if (bi < 0 || bi > b->len) exception(loc, index_id, D);
+            if (ai + n > a->len) exception(loc, size_id, E);
+            if (bi + n > b->len) exception(loc, size_id, E);
 
             if (a == b) return newint(0); // Must come after checks.
 
@@ -2242,10 +2377,12 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             if (bi < 0) bi += b->len;
             if (n < 0) n = b->len + n - bi + 1;
 
-            if (ai < 0 || ai >= a->len || bi < 0 || bi >= b->len || bi + n > b->len)
-                error(loc, "findsubstr: index error: %v %v %v", B, D, E);
+            if (ai < 0 || ai > a->len) exception(loc, index_id, B);
+            if (bi < 0 || bi > b->len) exception(loc, index_id, D);
+            if (bi + n > b->len) exception(loc, size_id, E);
 
-            if (n == 0) return none; // Cannot find empty string.
+            if (n == 0) exception(loc, empty_id, unit);
+
             if (n == 1) {
                 char *ptr = memchr(a->txt + ai, b->txt[bi], a->len - n + 1);
                 return ptr? newdata(some_id, newint(ptr - a->txt)): none;
@@ -2274,8 +2411,7 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
             int i = B.i;
 
             if (i < 0) i += src->len;
-            if (i < 0 || i >= src->len)
-                error(loc, "findchar: index error: %v", B);
+            if (i < 0 || i >= src->len) exception(loc, index_id, B);
 
             char *ptr = memchr(src->txt + i, C.c, src->len - i + 1);
             return ptr? newdata(some_id, newint(ptr - src->txt)): none;
@@ -2289,8 +2425,9 @@ val evalhost(t_loc loc, hostnum op, val *ap) {
 
             if (at < 0) at += src->len;
             if (dn < 0) dn = src->len + dn - at + 1;
-            if (at < 0 || at > src->len || dn < 0 || at + dn > src->len)
-                error(loc, "strsplice: index error: %v %v", B, C);
+
+            if (at < 0 || at > src->len) exception(loc, index_id, B);
+            if (dn < 0 || at + dn > src->len) exception(loc, size_id, C);
 
             int m = 0;
             for (struct list *i = D.list; i; i = i->tl)
@@ -2447,6 +2584,8 @@ t_env *match(t_exp *p, val x, t_env *env) {
     case Ecase:
     case Eif:
     case Eseq:
+    case Eexcept:
+    case Eexception:
         return error(p->loc, "UNREACHABLE");
     }
 }
@@ -2515,7 +2654,7 @@ val eval(t_exp *e, t_env *env) {
         }
 
         if (!(env = match(f.fn->lhs, x, f.fn->env)))
-            error(e->loc, "no match: %v", x);
+            exception(e->loc, match_id, x);
         e = f.fn->rhs;
         goto tail;
 
@@ -2524,7 +2663,7 @@ val eval(t_exp *e, t_env *env) {
     case Elet:
         x = eval(e->let.rhs, env);
         if (!(env = match(e->let.lhs, x, env)))
-            error(e->loc, "no match: %v", x);
+            exception(e->loc, match_id, x);
         e = e->let.e;
         goto tail;
 
@@ -2551,7 +2690,7 @@ val eval(t_exp *e, t_env *env) {
                     e = r->rhs;
                     goto tail;
                 }
-            return error(e->loc, "no match: %v", x), unit;
+            return exception(e->loc, match_id, x);
         }
 
     case Eif:
@@ -2563,6 +2702,43 @@ val eval(t_exp *e, t_env *env) {
         eval(e->seq.lhs, env);
         e = e->seq.rhs;
         goto tail;
+
+    case Eexcept:
+        {
+            jmp_buf *old = exn_buf;
+            jmp_buf new;
+            exn_buf = &new;
+
+            if (setjmp(new)) {
+                exn_buf = old;
+
+                for (t_erules *r = e->except.rs; r; r = r->next) {
+
+                    if (r->id != exn_id) continue;
+
+                    t_env *local = match(r->arg, exn_arg, env);
+
+                    if (!local) continue;
+
+                    e = r->rhs;
+                    env = local;
+                    goto tail;
+                }
+
+                return exception(exn_loc, exn_id, exn_arg);
+
+            }
+            else {
+
+                x = eval(e->except.e, env);
+                exn_buf = old;
+                return x;
+
+            }
+        }
+
+    case Eexception:
+        return exception(e->loc, e->exception.id, eval(e->exception.e, env));
 
     case Eas: return unit;
     }
@@ -2583,6 +2759,12 @@ int main(int argc, char **argv) {
     cons_id = intern(":", -1);
     ref_id = intern("ref", -1);
     some_id = intern("Some", -1);
+    match_id = intern("match", -1);
+    division_id = intern("division", -1);
+    exponent_id = intern("exponent", -1);
+    index_id = intern("index", -1);
+    size_id = intern("size", -1);
+    empty_id = intern("empty", -1);
 
     t_type *a = polyvar(0);
     unittype = tuptype(0, 0);
@@ -2602,6 +2784,8 @@ int main(int argc, char **argv) {
     define(&all_types, listtype->id, listtype);
     define(&all_types, ref_id, reftype);
     define(&all_types, opttype->id, opttype);
+
+    define(&all_exns, match_id, a);
 
     unit = newtup(0, 0);
     nil = (val) { List, .list=0 };
@@ -2635,6 +2819,11 @@ int main(int argc, char **argv) {
         "infixr 2                    # or\n"
         "infixl 1 &\n"
         "infixr 0 $\n"
+        "exception division with int\n"
+        "exception exponent with int\n"
+        "exception index with int\n"
+        "exception size with int\n"
+        "exception empty\n"
     ;
     setsrc("boot", boot);
     top(&e);
@@ -2686,6 +2875,4 @@ int main(int argc, char **argv) {
     // print(":: %t\n", t);
     (void) t;
     eval(e, to_env(senv));
-
-    puts("done.");
 }

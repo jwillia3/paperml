@@ -1,5 +1,9 @@
+exception hd
+exception tl
+exception value
+exception invalid_escape with string
+
 let print x = prn x; prn '\n'; x
-let abort msg = print msg; exit 1
 
 let (of) f g x = f (g x)
 let f $ x = f x
@@ -176,6 +180,7 @@ let isalpha c = islower c or isupper c
 let isalnum c = isalpha c or isdigit c
 let isspace c = c == ' ' or c == '\t' or c == '\n'
 
+let findchar src c = findchar' src 0 c
 let findstr src item = findsubstr src 0 item 0 -1
 let findstr' src i item = findsubstr src i item 0 -1
 
@@ -198,7 +203,7 @@ let unescape src =
     loop 0 []
     where rec loop i out =
         if i < strlen src then
-            case findchar src i '\\'
+            case findchar' src i '\\'
             | None -> join (rev (substr src i -1 : out))
             | Some j ->
                 let s = substr src i (j - i)
@@ -209,7 +214,7 @@ let unescape src =
             join (rev out)
     rec unesc i =
         if i >= strlen src then
-            abort "unescape: invalid escape"
+            exception invalid_escape with src
         else
             case charat src i
             | 'a' -> (i + 1, "\a")
@@ -222,14 +227,14 @@ let unescape src =
             | 'v' -> (i + 1, "\v")
             | 'x' ->
                 if i + 2 >= strlen src then
-                    abort "unescape: invalid \\xHH"
+                    exception invalid_escape with src
                 else
-                    let x = findchar "0123456789abcdef" 0 (charat src (i + 1))
-                    let y = findchar "0123456789abcdef" 0 (charat src (i + 2))
+                    let x = findchar "0123456789abcdef" (charat src (i + 1))
+                    let y = findchar "0123456789abcdef" (charat src (i + 2))
                     let s =
                         case (x, y)
                         | (Some x, Some y) -> chartostr (chr (x*16 + y))
-                        | _ -> abort "unescape: invalid \\xHH"
+                        | _ -> exception invalid_escape with src
                     in
                     (i + 3, s)
             | c -> (i + 1, chartostr c)
