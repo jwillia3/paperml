@@ -151,7 +151,23 @@ let zip xs ys = loop (xs, ys) []
 
 let unzip pairs = foldr (\(x, y) (xs, ys) -> (x:xs, y:ys)) ([], []) pairs
 
+let onfst f (x, y) = (f x, y)
+
+let onsnd f (x, y) = (x, f y)
+
+let sum xs = foldl (+) 0 xs
+
+let sum' f xs = foldl (\n x -> n + f x) 0 xs
+
 let length xs = foldl (\n _ -> n + 1) 0 xs
+
+let samelength xs ys = compare xs ys
+    where
+    rec compare xs ys = case (xs, ys)
+    | (_:xs', _:ys') -> compare xs' ys'
+    | ([], []) -> true
+    | ([], _) -> false
+    | (_, []) -> false
 
 let mergesort (<=) xs = hd (sort (map singleton xs)) where
     rec sort xs = case xs
@@ -168,6 +184,29 @@ let stablesort (<=) xs = mergesort (<=) xs
 let sort (<=) xs = stablesort (<=) xs
 
 let shuffle xs = map snd (sort (\a b -> fst a <= fst b) (map (\x-> (rand (), x)) xs))
+
+# List must be sorted.
+let dups xs = loop xs []
+    where rec loop xs out = case xs
+    | x:y:xs' ->
+        if x == y then
+            loop (dropwhile (equal x) xs') (x:out)
+        else
+            loop xs' out
+    | _ -> rev out
+
+# List must be sorted.
+let uniq xs = loop xs []
+    where rec loop xs out = case xs
+    | x:y:xs' ->
+        if x == y then
+            loop (dropwhile (equal x) xs') out
+        else
+            loop (y:xs') (x:out)
+    | [x] -> rev (x:out)
+    | [] -> rev out
+
+
 
 #
 # String Functions
@@ -198,6 +237,12 @@ let split delim str = loop 0 (findstr' str 0 delim)
             else
                 [""]
     | None -> [substr str i -1]
+
+let join_with sep xs = case xs
+    | [] -> ""
+    | [x] -> x
+    | x:xs -> join (x : flatmap (\i-> [sep, i]) xs)
+    endc
 
 let unescape src =
     loop 0 []
@@ -238,6 +283,9 @@ let unescape src =
                     in
                     (i + 3, s)
             | c -> (i + 1, chartostr c)
+
+# QQQ
+let escape quote src = src
 
 
 let read_file path =

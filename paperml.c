@@ -664,9 +664,12 @@ void *printtype(t_type *t, bool paren) {
 
     case FnType:
         if (paren) return print("(%t)", t);
+        {
+            t_type *u = follow(t->ts[1]);
 
-        return print(t->ts[1]->form == FnType? "%T -> %t": "%T -> %T",
-            t->ts[0], t->ts[1]);
+            return print(u->form == FnType? "%T -> %t": "%T -> %T",
+                t->ts[0], t->ts[1]);
+        }
     }
 }
 

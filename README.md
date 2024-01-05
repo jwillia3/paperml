@@ -132,6 +132,19 @@ Lvl Right   Left
 Exceptions
 ----------
 
+```
+exception division
+exception exponent with int
+exception empty
+exception hd
+exception index with int
+exception invalid_escape with string
+exception match
+exception size with int
+exception tl
+exception value
+```
+
 Exceptions are raised with `exception ID` or `exception ID with val`.
 
 Exceptions must be declared beforehand.

@@ -1,6 +1,16 @@
+datatype id :: string
+datatype loc :: string
+
 let error loc msg =
     print (join ["paperml.al: error ", loc, ": ", msg]);
     exit 1
+
+
+
+
+#
+#   Lexical Analysis.
+#
 
 datatype token :: {loc::string, txt::string, type::string}
 
@@ -113,8 +123,13 @@ let (tokenise :: string -> string -> [token]) = \path src ->
     in
     multi []
 
-datatype id :: string
-datatype loc :: string
+
+
+
+#
+#   Parsing.
+#
+
 
 datatype tyexp =
     | TEcon (loc, tyexp list, id)
@@ -135,19 +150,19 @@ datatype ast =
     | Afn (loc, ast, ast)
     | Adot (loc, ast, id)
     | Awith (loc, ast, (id, ast) list)
-    | Aapp (loc, ast, ast list)
+    | Aapp (loc, ast, ast)
     | Aand (loc, ast, ast)
     | Aor (loc, ast, ast)
     | Alet (loc, ast, ast, ast)
-    | Aletrec (loc, (ast, ast) list, ast)
+    | Aletrec (loc, (loc, ast, ast) list, ast)
     | Aif (loc, ast, ast, ast)
-    | Acase (loc, ast, (ast, ast) list)
+    | Acase (loc, ast, (loc, ast, ast) list)
     | Aty (loc, ast, tyexp)
     | Aseq (loc, ast, ast)
-    | Aexception (loc, string, ast)
-    | Aexcept (loc, ast, (string, ast, ast) list)
+    | Aexception (loc, id, ast)
+    | Aexcept (loc, ast, (loc, id, ast, ast) list)
 
-let locof ast = case ast
+let aloc ast = case ast
     | Aint (loc, _) -> loc
     | Achar (loc, _) -> loc
     | Astring (loc, _) -> loc
@@ -178,13 +193,15 @@ let rec set_let_body e body = case e
     | _ -> body
 
 
-datatype dtd =
-    | DTalias (loc, [id], tyexp)
-    | DTdec (loc, [id], [(loc, id, tyexp option)])
+# Module declaration.
+datatype md :: {
+    body :: ast,
+    aliases :: [ (loc, id, [id], tyexp) ],
+    types :: [ (loc, id, [id], [(loc, id, tyexp option)]) ],
+    exns :: [(loc, id, tyexp)],
+}
 
-datatype pstate :: {e::ast, dtds::[dtd], exns::[(id, tyexp)]}
-
-let parse (tokens::[token]) =
+let parse (init_md::md) (tokens::[token]) =
     let src = ref tokens
 
     let infixes :: [(id, (int, bool))] ref =
@@ -235,6 +252,11 @@ let parse (tokens::[token]) =
         | Some x -> x : seq p
         | None -> []
 
+    let rec dsv delim p =
+        want delim;
+        p () : seq p'
+        where p' _ = if want delim then Some (p ()) else None
+
     let rec rep p x =
         case p x
         | Some x' -> rep p x'
@@ -244,7 +266,7 @@ let parse (tokens::[token]) =
 
     let
 
-    rec top (st::pstate) =
+    rec top (st::md) =
         let {loc, type, _} = next ()
         in
         case type
@@ -252,7 +274,7 @@ let parse (tokens::[token]) =
         | "infixr" -> infix_dec false; top st
         | "datatype" -> top (datatype_dec st)
         | "exception" -> top (exn_dec st)
-        | "let" -> top (st with {e = set_let_body st.e (_let "let")})
+        | "let" -> top (st with {body = set_let_body st.body (_let "let")})
         | "eof" -> st
         | _ -> error loc "need top-level declaration"
 
@@ -274,37 +296,30 @@ let parse (tokens::[token]) =
                 seq \()-> if peek "id" then Some ((need "id").txt) else None
             else
                 []
-        let dec =
-            if want "::" then
-                DTalias (loc, tvs, ty ())
-            else
-                DTdec (loc, tvs, need "="; want "|"; dc () : seq dc')
         in
-        st with {dtds = st.dtds ++ [dec]}
-
-    rec exn_dec st =
-        let {loc, txt=id, _} = need "id"
-        let t = if want "with" then ty () else TEtuple (loc, [])
-        in
-        st with {exns = st.exns ++ [(id, t)]}
-
-    rec dc' () =
-        if want "|" then Some (dc ()) else None
+        if want "::" then
+            st with { aliases = st.aliases ++ [(loc, id, tvs, ty ())] }
+        else
+            st with { types = st.types ++ [(loc, id, tvs, need "="; dsv "|" dc)] }
 
     rec dc () =
         let {loc, txt=id, _} = need "id"
         in
         (loc, id, opt_ty ())
 
+    rec exn_dec st =
+        let {loc, txt=id, _} = need "id"
+        let t = if want "with" then ty () else TEtuple (loc, [])
+        in
+        st with {exns = st.exns ++ [(loc, id, t)]}
+
     rec _let cont =
         let loc = getloc ()
         let e =
-            if peek "rec" then
-                let ds = seq (\()-> if want "rec" then Some (dec ()) else None)
-                in
-                Aletrec (loc, ds, dummy ())
+            if want "rec" then
+                Aletrec (loc, dsv "rec" dec, dummy ())
             else
-                let (lhs, rhs) = dec ()
+                let (_, lhs, rhs) = dec ()
                 in
                 Alet (loc, lhs, rhs, dummy ())
         in
@@ -313,7 +328,7 @@ let parse (tokens::[token]) =
         else
             e
 
-    rec dec () = (exp (), need "="; exp ())
+    rec dec () = (getloc (), exp (), need "="; exp ())
 
     rec exp () =
         let e =
@@ -358,11 +373,7 @@ let parse (tokens::[token]) =
                 Some (Aseq (loc, e, exp ()))
 
             | {type="except", loc, _} ->
-                let r = want "|"; exceptrule ()
-                let rs =
-                    seq (\_-> if want "|" then Some (exceptrule ()) else None)
-                in
-                Some (Aexcept (loc, e, r : rs))
+                Some (Aexcept (loc, e, dsv "|" exceptrule))
 
             | tok ->
                 unget tok;
@@ -386,7 +397,7 @@ let parse (tokens::[token]) =
     rec cexp () =
         case (aexp (), seq opt_aexp)
         | (e, []) -> e
-        | (f, xs) -> Aapp (locof f, f, xs)
+        | (f, xs) -> foldl (\f x-> Aapp (aloc f, f, x)) f xs
 
     rec aexp () =
         let e =
@@ -412,7 +423,7 @@ let parse (tokens::[token]) =
 
             | "[" ->
                 foldr
-                    (\x xs -> Acons (locof x, x, xs))
+                    (\x xs -> Acons (aloc x, x, xs))
                     (Anil loc)
                     (csv exp "]")
 
@@ -473,19 +484,23 @@ let parse (tokens::[token]) =
                     | "and" -> Aand (loc, e, e'')
                     | "or" -> Aor (loc, e, e'')
                     | ":" -> Acons (loc, e, e'')
-                    | _ -> Aapp (loc, Aid (loc, id), [e, e''])
+                    | _ -> Aapp (loc, Aapp(loc, Aid (loc, id), e), e'')
                     endc
                 in
                 reduce (e''', lvl, lassoc, rest'')
         endc
 
-    rec rule () = if want "|" then Some (exp (), need "->"; exp ()) else None
+    rec rule () =
+        if want "|" then
+            Some (getloc (), exp (), need "->"; exp ())
+        else
+            None
 
     rec exceptrule () =
         let {loc, txt=id, _} = next ()
         let arg = if want "with" then aexp () else Atuple (loc, [])
         in
-        (id, arg, need "->"; exp ())
+        (loc, id, arg, need "->"; exp ())
 
     rec opt_ty () =
         if (case (hd !src).type
@@ -502,7 +517,7 @@ let parse (tokens::[token]) =
     rec ty () =
         let loc = getloc ()
         let t =
-            case aty () : seq (\()-> if want "and" then Some (aty ()) else None)
+            case dsv "and" aty
             | [t] -> t
             | ts -> TEcon (loc, ts, (need "id").txt)
         in
@@ -553,12 +568,596 @@ let parse (tokens::[token]) =
 
     in
     mark_infixes ();
-    top {e=dummy (), dtds=[], exns=[]}
+    top init_md
+
+
+
+
+#
+#   Core Language.
+#
+#   Types:
+#   - records fields are always sorted.
+#
+#
+
+
+datatype type =
+    | Type (type list, id)
+    | Typevar ((id, int, type option) ref)
+    | Polyvar (id ref)
+    | FnType (type, type)
+    | TupType (type list)
+    | RecType ((string, type) list)
+    | OpenRecType (((string, type) list, type option) ref)
+
+datatype pat =
+    | Pint (loc, int)
+    | Pchar (loc, char)
+    | Pstring (loc, string)
+    | Pvar (loc, id)
+    | Pcon (loc, id)
+    | Pany loc
+    | Papp (loc, id, pat)
+    | Ptuple (loc, pat list)
+    | Precord (loc, (string, pat) list)
+    | Popenrecord (loc, (string, pat) list)
+
+datatype exp =
+    | Cint (loc, int)
+    | Cchar (loc, char)
+    | Cstring (loc, string)
+    | Cvar (loc, id)
+    | Ccon (loc, id)
+    | Ctuple (loc, exp list)
+    | Crecord (loc, (id, exp) list)
+    | Cfn (loc, id, exp)
+    | Capp (loc, exp, exp)
+    | Ccase (loc, exp, (loc, pat, exp) list)
+    | Clet (loc, id, exp, exp)
+    | Cletrec (loc, (loc, id, exp) list, exp)
+    | Cexcept (loc, exp, (loc, id, pat, exp) list)
+    | Cexception (loc, string, exp)
+
+
+let rec follow t = case t
+    | Typevar !(_, _, Some t') -> t'
+    | OpenRecType !(_, (Some t')) -> t'
+    | _ -> t
+
+let isfntype t = case t | FnType _ -> true | _ -> false
+
+let istv t = case t | Typevar _ -> true | Polyvar _ -> true | _ -> false
+
+let rec ty2str t =
+    case follow t
+    | Type ([], id) -> id
+    | Type (ts, id) -> join [join_with " and " (map paren ts), " ", id]
+    | Typevar !(id, _, _) -> id
+    | Polyvar !id -> id
+    | FnType (lhs, rhs) ->
+        join [paren lhs, " -> ", if isfntype rhs then paren rhs else ty2str rhs]
+    | TupType ts -> join ["(", join_with "," (map ty2str ts), ")"]
+    | RecType fs -> join ["{", join_with ", " (map field fs), "}"]
+    | OpenRecType !([], _) -> "{_}"
+    | OpenRecType !(fs, _) -> join ["{", join_with ", " (map field fs), ", _ }"]
+    endc
+
+    where paren t =
+        if
+            case follow t
+            | Type ([], _) -> false
+            | Type _ -> true
+            | Typevar _ -> false
+            | Polyvar _ -> false
+            | FnType _ -> true
+            | TupType _ -> false
+            | RecType _ -> false
+            | OpenRecType _ -> false
+            endc
+        then
+            join ["(", ty2str t, ")"]
+        else
+            ty2str t
+
+    def field (id, t) = join [id, "::", ty2str t]
+
+
+# Pretty-printing fragments.
+datatype pp =
+    | PPB           # break point.
+    | PPT string    # text fragment.
+    | PPJ [pp]      # joined fragments; unbreakable.
+    | PPG [pp]      # grouped fragments; break if ill-fitting.
+
+# Width of pretty-printing page.
+let page_width = 80
+
+let pretty_print e = fst (output true "\n" page_width (pp e))
+    where
+
+    def comma = [PPT ",", PPB]
+    def bar = [PPB, PPT "| "]
+    def _rec = [PPB, PPT "rec "]
+    def blank = PPT ""
+
+    def rec pp e = case e
+        | Cint (_, i) -> PPT (itoa i)
+        | Cchar (_, c) -> PPT ("'" ^ escape '\'' (chartostr c) ^ "'")
+        | Cstring (_, s) -> PPT ("\"" ^ escape '"' s ^ "\"")
+        | Cvar (_, id) -> PPT id
+        | Ccon (_, id) -> PPT id
+        | Ctuple (_, es) -> PPG [PPT "(", csv (map pp es), PPT ")"]
+        | Crecord (_, fs) -> PPG [PPT "{", csv (map ppf fs), PPT "}"]
+        | Cfn (_, id, e) -> PPG [PPT "\\", PPT id, PPT "->", PPB, pp e]
+        | Capp (_, e, Capp _ @ f) -> PPG [pp e, PPB, PPT "(", pp f, PPT ")"]
+        | Capp (_, e, f) -> PPG [pp e, PPB, pp f]
+        | Ccase (_, e, rs) ->
+            PPG [PPT "case ", pp e, PPB,
+                PPT "| ", dsv bar (map ppr rs), PPB,
+                PPT "endc"]
+        | Clet (_, id, v, e) ->
+            PPG [PPG [PPT "let ", PPT id, PPT " =", PPB, pp v], PPB, PPT "in", PPB, pp e]
+        | Cletrec (_, ds, e) ->
+            PPJ [PPT "let rec ", dsv _rec (map ppd ds), PPB, PPT "in", PPB, pp e]
+        | Cexcept (_, e, rs) ->
+            PPG [pp e, PPB, PPT "except", PPB, dsv bar (map pper rs), PPB, PPT "ende"]
+        | Cexception (_, id, e) ->
+            PPG [PPT "exception ", PPT id, PPB, PPT "with ", pp e]
+    endc
+
+    rec ppp p = case p
+        | Pint (_, i) -> PPT (itoa i)
+        | Pchar (_, c) -> PPT ("'" ^ escape '\'' (chartostr c) ^ "'")
+        | Pstring (_, s) -> PPT ("\"" ^ escape '"' s ^ "\"")
+        | Pvar (_, id) -> PPT id
+        | Pcon (_, id) -> PPT id
+        | Pany _ -> PPT "_"
+        | Papp (_, id, Papp _ @ p) -> PPG [PPT id, PPB, PPT "(", ppp p, PPT ")"]
+        | Papp (_, id, p) -> PPG [PPT id, PPB, ppp p]
+        | Ptuple (_, ps) -> PPG [PPT "(", csv (map ppp ps), PPT ")"]
+        | Precord (_, fs) -> PPG [PPT "{", csv (map pppf fs), PPT "}"]
+        | Popenrecord (_, fs) -> PPG [PPT "{_, ", csv (map pppf fs), PPT "}"]
+
+    rec ppd (loc, id, e) = PPJ [PPT id, PPT " =", PPB, pp e]
+    rec ppf (id, e) = PPJ [PPT id, PPT " =", PPB, pp e]
+    rec pppf (id, p) = PPJ [PPT id, PPT " =", PPB, ppp p]
+    rec ppr (loc, lhs, rhs) = PPJ [ppp lhs, PPT " ->", PPB, pp rhs]
+    rec pper (loc, id, p, rhs) =
+        PPJ [PPT id, PPT " with ", ppp p, PPT " ->", PPB, pp rhs]
+
+    rec dsv sep ps =
+        case ps
+        | [] -> blank
+        | [p] -> p
+        | p:ps' -> PPG (p : flatmap (\p-> sep ++ [p]) ps')
+
+    rec csv ps = dsv comma ps
+
+    rec output horiz br remain p =
+        case p
+        | PPB ->
+            if horiz then
+                (" ", remain - 1)
+            else
+                (br, page_width - strlen br - 1)
+        | PPT s -> (s, remain - strlen s)
+        | PPJ ps ->
+            let f = output horiz br
+            let g (s, r) p = let (s', r') = f r p in (s':s, r')
+            in
+            onfst (join of rev) (foldl g ([], remain) ps)
+        | PPG ps ->
+            let horiz' = remain >= sum' width ps
+            let br' = if horiz' then br else br ^ "  "
+            let f = output horiz' br'
+            let g (s, r) p = let (s', r') = f r p in (s':s, r')
+            in
+            onfst (join of rev) (foldl g ([], remain) ps)
+        endc
+
+    rec width p =
+        case p
+        | PPB -> 1
+        | PPT s -> strlen s
+        | PPJ ps -> sum' width ps
+        | PPG ps -> sum' width ps
+        endc
+
+
+let make_module (md :: md) =
+    # Module building state.
+    let types :: [(id, type)] ref = ref []
+    let cons :: [(id, type)] ref = ref []
+    let exns :: [(id, type)] ref = ref []
+
+    let gensym =
+        let uid = ref 0
+        in \() -> "$" ^ itoa (incr uid)
+
+    in
+        (
+            let env = init ()
+            in
+            apply def_type md.types;
+            apply def_alias md.aliases;
+            apply def_cons md.types;
+            apply def_exn md.exns;
+            let body = to_core md.body
+            in
+            pretty_print body
+        )
+
+    where
+
+    rec def_type (loc, id, tv_ids, dcs) =
+        if issome (assoc id !types) then
+            error loc ("redefining type: " ^ id)
+        else
+            with_tvs tv_ids \tvs -> [(id, Type (tvs, id))]
+
+    rec def_alias (loc, id, tv_ids, te) =
+        if issome (assoc id !types) then
+            error loc ("redefining type: " ^ id)
+        else
+            with_tvs tv_ids \tvs -> [(id, to_type te)]
+
+    rec def_cons (_, dt_id, tv_ids, dcs) =
+        let Some dt = assoc dt_id !types
+        in
+        (with_tvs tv_ids \tvs -> apply def_con dcs; [])
+
+        where def_con (loc, id, te_opt) =
+            if issome (assoc id !cons) then
+                error loc ("redefining constructor: " ^ id)
+            else
+                case te_opt
+                | Some te -> cons := (id, FnType (to_type te, dt)) : !cons
+                | None -> cons := (id, dt) : !cons
+                endc
+        endw
+
+    rec def_exn (loc, id, te) =
+        if issome (assoc id !exns) then
+            error loc ("redefining exception: " ^ id)
+        else
+            exns := (id, to_type te) : !exns
+
+    rec with_tvs tv_ids f =
+        let tvs = map (Polyvar of ref) tv_ids
+        let old_types = !types
+        in
+        types := zip tv_ids tvs ++ !types;
+        types := f tvs ++ old_types
+
+    rec to_core (ast :: ast) =
+        case ast
+        | Aint (loc, int) -> Cint (loc, int)
+        | Achar (loc, char) -> Cchar (loc, char)
+        | Astring (loc, string) -> Cstring (loc, string)
+
+        | Aid (loc, id) ->
+            if issome (assoc id !cons) then
+                Ccon (loc, id)
+            else
+                Cvar (loc, id)
+
+        | Anil loc -> Ccon (loc, "[]")
+
+        | Acons (loc, lhs, rhs) ->
+            Capp (loc,
+                Ccon (loc, ":"),
+                Ctuple (loc, [to_core lhs, to_core rhs]))
+
+        | Atuple (loc, es) -> Ctuple (loc, map (to_core) es)
+
+        | Arecord (loc, fs) -> Crecord (loc, map (onsnd (to_core)) fs)
+
+        | Ader (loc, e) ->
+            let (vp, ve) = genpair loc
+            in
+            Ccase (loc, to_core e, [(loc, Papp (loc, "ref", vp), ve)])
+
+        | Afn (loc, lhs, rhs) ->
+            case getvar lhs
+            | Some id -> Cfn (loc, id, to_core rhs)
+            | None ->
+                let v = gensym ()
+                let body =
+                    Ccase (loc, Cvar (loc, v), [(loc, to_pat lhs, to_core rhs)])
+                in
+                Cfn (loc, v, body)
+            endc
+
+        | Adot (loc, e, id) ->
+            let (vp, ve) = genpair loc
+            let p = Popenrecord (loc, [(id, vp)])
+            in
+            Ccase (loc, to_core e, [(loc, p, ve)])
+
+        | Awith (loc, _, _) ->
+            error loc "QQQ: WITH EXPRESSION"
+
+        | Aapp (loc, f, x) ->
+            Capp (loc, to_core f, to_core x)
+
+        | Aand (loc, lhs, rhs) ->
+            from_if loc (to_core lhs) (to_core rhs) (Ccon (loc, "false"))
+
+        | Aor (loc, lhs, rhs) ->
+            from_if loc (to_core lhs) (Ccon (loc, "true")) (to_core rhs)
+
+        | Alet (loc, lhs, rhs, body) ->
+            case to_dec loc lhs rhs
+            | Some (loc, id, val) -> Clet (loc, id, val, to_core body)
+            | None -> Ccase (loc, to_core rhs, [(loc, to_pat lhs, to_core body)])
+            endc
+
+        | Aletrec (loc, ds, e) ->
+            let ds' = map (\(loc, lhs, rhs)-> to_dec loc lhs rhs) ds
+            let check d =
+                case d
+                | (Some ((loc, id, rhs) @ dec)) ->
+                    if isfn rhs then
+                        dec
+                    else
+                        error loc "rec only defines functions"
+                | None -> error loc "rec only defines functions"
+            in
+            Cletrec (loc, map check ds', to_core e)
+
+        | Aif (loc, c, t, f) ->
+            from_if loc (to_core c) (to_core t) (to_core f)
+
+        | Acase (loc, e, rs) ->
+            let rs' = map (\(loc, lhs, rhs)-> (loc, to_pat lhs, to_core rhs)) rs
+            in
+            Ccase (loc, to_core e, rs')
+
+        | Aty (loc, _, _) ->
+            error loc "QQQ: TYPE EXPRESSIONS"
+
+        | Aseq (loc, e, f) ->
+            Ccase (loc, to_core e, [(loc, Pany loc, to_core f)])
+
+        | Aexception (loc, id, e) -> Cexception (loc, id, to_core e)
+
+        | Aexcept (loc, e, rs) ->
+            let rs' =
+                map (\(loc, id, arg, rhs)-> (loc, id, to_pat arg, to_core rhs)) rs
+            in
+            Cexcept (loc, to_core e, rs')
+
+        endc
+
+    rec to_dec loc lhs rhs =
+        case getvar lhs
+
+        | Some id -> Some (loc, id, to_core rhs)
+
+        | None ->
+            case app2dec lhs
+            | Some (id, ps) ->
+                Some (loc, id, to_core (foldr (\p e-> Afn (loc, p, e)) rhs ps))
+            | None -> None
+            endc
+
+    rec from_if loc c t f =
+        Ccase (loc, c, [(loc, Pcon (loc, "false"), f), (loc, Pcon (loc, "true"), t)])
+
+    # Convert from app form to (id, [param]) for l.h.s. of let.
+    rec app2dec ast = gather ast []
+        where rec gather ast ps =
+            case ast
+            | Aapp (loc, Aapp _ @ lhs, rhs) -> gather lhs (rhs:ps)
+            | Aapp (loc, Aid (_, id), rhs) -> Some (id, rhs:ps)
+            | _ -> None
+            endc
+        endw
+
+    rec to_pat ast =
+        case ast
+        | Aint (loc, int) -> Pint (loc, int)
+        | Achar (loc, char) -> Pchar (loc, char)
+        | Astring (loc, string) -> Pstring (loc, string)
+
+        | Aid (loc, id) ->
+            if issome (assoc id !cons) then
+                Pcon (loc, id)
+            else
+                Pvar (loc, id)
+
+        | Anil loc -> Pcon (loc, "[]")
+
+        | Acons (loc, lhs, rhs) ->
+            Papp (loc, ":", Ptuple (loc, [to_pat lhs, to_pat rhs]))
+
+        | Atuple (loc, ps) -> Ptuple (loc, map (to_pat) ps)
+        | Arecord (loc, fs) -> Precord (loc, map (onsnd (to_pat)) fs)
+
+        | Ader (loc, p) -> Papp (loc, "ref", to_pat p)
+
+        | Aapp (loc, f, x) ->
+            case getvar f
+            | Some id ->
+                if issome (assoc id !cons) then
+                    Papp (loc, id, to_pat x)
+                else
+                    invalid_pat ast
+            | _ -> invalid_pat ast
+            endc
+
+        | Adot _ -> invalid_pat ast
+        | Awith _ -> invalid_pat ast
+        | Aand _ -> invalid_pat ast
+        | Aor _ -> invalid_pat ast
+        | Alet _ -> invalid_pat ast
+        | Aletrec _ -> invalid_pat ast
+        | Aif _ -> invalid_pat ast
+        | Acase _ -> invalid_pat ast
+        | Aty _ -> invalid_pat ast
+        | Aseq _ -> invalid_pat ast
+        | Aexception _ -> invalid_pat ast
+        | Aexcept _ -> invalid_pat ast
+        endc
+
+    rec invalid_pat ast =
+        error (aloc ast) "invalid pattern"
+
+    rec isfn exp = case exp | Cfn _ -> true | _ -> false
+
+    rec getvar ast = case ast | Aid (_, id) -> Some id | _ -> None
+
+    rec to_type te = case te
+
+        | TEcon (loc, tes, id) ->
+
+            case assoc id !types
+
+            | Some (Type (ts, id')) ->
+                if samelength ts tes then
+                    Type (map to_type tes, id')
+                else
+                    error loc ("mismatched type args: " ^ id)
+
+            | Some type ->
+                if tes <> [] then
+                    error loc ("not a type constructor: " ^ id)
+                else
+                    type
+
+            | None -> error loc ("undefined type: " ^ id)
+
+            endc
+
+        | TEtuple (loc, tes) -> TupType (map to_type tes)
+
+        | TErecord (loc, fs) ->
+            let fs' = map (onsnd to_type) fs
+            let fs'' = sort (\(id, _) (id', _) -> strcmp id id' <= 0) fs'
+            in
+
+            case dups (map fst fs'')
+            | [] -> ()
+            | dups -> error loc ("duplicate fields: " ^ join_with ", " dups)
+            endc;
+
+            RecType fs''
+
+        | TEfn (loc, lhs, rhs) -> FnType (to_type lhs, to_type rhs)
+
+    rec genpair loc = let id = gensym () in (Pvar (loc, id), Cvar (loc, id))
+
+    rec init () =
+        let a = Polyvar (ref "a")
+        let unittype = TupType []
+        let booltype = Type ([], "bool")
+        let inttype = Type ([], "int")
+        let chartype = Type ([], "char")
+        let stringtype = Type ([], "string")
+        let listtype = Type ([a], "list")
+        let optiontype = Type ([a], "option")
+        let reftype = Type ([a], "ref")
+        in
+
+        types := [
+            ("bool", booltype),
+            ("int", inttype),
+            ("char", chartype),
+            ("string", stringtype),
+            ("list", listtype),
+            ("option", optiontype),
+            ("ref", reftype),
+        ];
+
+        cons := [
+            ("false", booltype),
+            ("true", booltype),
+            ("None", optiontype),
+            ("Some", FnType (a, optiontype)),
+            ("[]", listtype),
+            (":", FnType (TupType [a, listtype], listtype)),
+            ("ref", reftype),
+        ];
+
+        exns := [
+            ("match", a),
+            ("division", inttype),
+            ("exponent", inttype),
+            ("index", inttype),
+            ("size", inttype),
+            ("empty", unittype),
+        ];
+
+        let f x y = FnType (x, y)
+        let f2 x y z = FnType (x, f y z)
+        let f3 x y z w = FnType (x, f2 y z w)
+        let f4 x y z w v = FnType (x, f3 y z w v)
+        let f5 x y z w v u = FnType (x, f4 y z w v u)
+        let u = unittype
+        let b = booltype
+        let i = inttype
+        let c = chartype
+        let s = stringtype
+        let l x = Type ([x], "list")
+        let o x = Type ([x], "option")
+        let r x = Type ([x], "ref")
+        in
+        [
+            ("+", f2 i i i),
+            ("-", f2 i i i),
+            ("*", f2 i i i),
+            ("/", f2 i i i),
+            ("rem", f2 i i i),
+            ("**", f2 i i i),
+            ("<", f2 i i b),
+            (">", f2 i i b),
+            ("<=", f2 i i b),
+            (">=", f2 i i b),
+            ("==", f2 a a b),
+            ("<>", f2 a a b),
+            ("ord", f c i),
+            ("chr", f i c),
+            ("charcmp", f2 c c i),
+            ("implode", f (l c) s),
+            ("chartostr", f c s),
+            ("^", f2 s s s),
+            ("join", f (l s) s),
+            ("strlen", f s i),
+            ("charat", f2 s i c),
+            ("strsplice", f4 s i i (l s) s),
+            ("substr", f3 s i i s),
+            ("strcmp", f2 s s i),
+            ("substrcmp", f5 s i s i i i),
+            ("findsubstr", f5 s i s i i (o i)),
+            ("findchar", f3 s i c (o i)),
+            ("atoi", f s i),
+            ("itoa", f i s),
+            (":=", f (r a) a),
+            ("exit", f i a),
+            ("prn", f a a),
+            ("srand", f i u),
+            ("rand", f u i),
+            ("getenviron", f u (l $ TupType [s, s])),
+            ("sysopen", f3 s i i i),
+            ("sysclose", f i i),
+            ("sysread", f2 i i s),
+            ("syswrite", f2 i s i),
+        ]
 
 
 let path = "test.al"
-# let path = "std.al"
-# let path = "paperml.al"
+let path = "std.al"
+let path = "paperml.al"
 let Some src = read_file path
 
-let main = tokenise path src & parse; print "done!"
+let init_md = {
+    aliases = [],
+    types = [],
+    exns = [],
+    body = Atuple ("", []),
+}
+
+let main =
+    tokenise path src & parse init_md & make_module & print;
+    print "done!"
