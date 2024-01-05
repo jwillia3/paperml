@@ -1,12 +1,6 @@
-datatype tree with a = EmptyTree | TreeNode (a, a tree, a tree)
-datatype map with a b = EmptyMap | Map (a, b, a and b map)
 
-datatype dict with a :: string and a map
+#let rec f x :: with a in a->[a] = [x+1]
 
-datatype q :: {a::int, b::string}
+let f (x @ z) = 0
 
-exception activision with string
-exception ea
-
-let _ = #let rec f = \ (x:xs)-> 1 in 2
-1 except something -> 10 | other with 1 -> 20 | qwerty with 123 -> 30
+let main = 0 & print

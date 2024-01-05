@@ -14,7 +14,7 @@ let error loc msg =
 
 datatype token :: {loc::string, txt::string, type::string}
 
-let (tokenise :: string -> string -> [token]) = \path src ->
+let tokenise path src :: string -> string -> [token] =
     let index = ref 0
     let lineptr = ref 0
     let ln = ref 1
@@ -46,6 +46,8 @@ let (tokenise :: string -> string -> [token]) = \path src ->
         "def",
         "else",
         "endc",
+        "ende",
+        "endf",
         "endw",
         "exception",
         "except",
@@ -136,6 +138,7 @@ datatype tyexp =
     | TEtuple (loc, tyexp list)
     | TErecord (loc, (id, tyexp) list)
     | TEfn (loc, tyexp, tyexp)
+    | TEscheme (loc, id list, tyexp)
 
 datatype ast =
     | Aint (loc, int)
@@ -153,8 +156,8 @@ datatype ast =
     | Aapp (loc, ast, ast)
     | Aand (loc, ast, ast)
     | Aor (loc, ast, ast)
-    | Alet (loc, ast, ast, ast)
-    | Aletrec (loc, (loc, ast, ast) list, ast)
+    | Alet (loc, ast, tyexp option, ast, ast)
+    | Aletrec (loc, (loc, ast, tyexp option, ast) list, ast)
     | Aif (loc, ast, ast, ast)
     | Acase (loc, ast, (loc, ast, ast) list)
     | Aty (loc, ast, tyexp)
@@ -178,7 +181,7 @@ let aloc ast = case ast
     | Aapp (loc, _, _) -> loc
     | Aand (loc, _, _) -> loc
     | Aor (loc, _, _) -> loc
-    | Alet (loc, _, _, _) -> loc
+    | Alet (loc, _, _, _, _) -> loc
     | Aletrec (loc, _, _) -> loc
     | Aif (loc, _, _, _) -> loc
     | Acase (loc, _, _) -> loc
@@ -188,7 +191,7 @@ let aloc ast = case ast
     | Aexcept (loc, _, _) -> loc
 
 let rec set_let_body e body = case e
-    | Alet (loc, lhs, rhs, e') -> Alet (loc, lhs, rhs, set_let_body e' body)
+    | Alet (loc, lhs, t, rhs, e') -> Alet (loc, lhs, t, rhs, set_let_body e' body)
     | Aletrec (loc, ds, e') -> Aletrec (loc, ds, set_let_body e' body)
     | _ -> body
 
@@ -201,8 +204,11 @@ datatype md :: {
     exns :: [(loc, id, tyexp)],
 }
 
-let parse (init_md::md) (tokens::[token]) =
-    let src = ref tokens
+
+# Parse module.
+let parse init_md tokens :: md->[token]->md =
+
+    let src :: [token] ref = ref tokens # QQQ REMOVE THIS EXPLICIT TYPE
 
     let infixes :: [(id, (int, bool))] ref =
         ref [
@@ -274,7 +280,7 @@ let parse (init_md::md) (tokens::[token]) =
         | "infixr" -> infix_dec false; top st
         | "datatype" -> top (datatype_dec st)
         | "exception" -> top (exn_dec st)
-        | "let" -> top (st with {body = set_let_body st.body (_let "let")})
+        | "let" -> top (st with {body = set_let_body st.body (lets "let")})
         | "eof" -> st
         | _ -> error loc "need top-level declaration"
 
@@ -291,11 +297,7 @@ let parse (init_md::md) (tokens::[token]) =
 
     rec datatype_dec st =
         let {loc, txt=id, _} = need "id"
-        let tvs =
-            if want "with" then
-                seq \()-> if peek "id" then Some ((need "id").txt) else None
-            else
-                []
+        let tvs = if want "with" then seq opt_id else []
         in
         if want "::" then
             st with { aliases = st.aliases ++ [(loc, id, tvs, ty ())] }
@@ -307,35 +309,47 @@ let parse (init_md::md) (tokens::[token]) =
         in
         (loc, id, opt_ty ())
 
+    rec opt_id () = if peek "id" then Some ((need "id").txt) else None
+
     rec exn_dec st =
         let {loc, txt=id, _} = need "id"
         let t = if want "with" then ty () else TEtuple (loc, [])
         in
         st with {exns = st.exns ++ [(loc, id, t)]}
 
-    rec _let cont =
+    rec lets cont =
         let loc = getloc ()
         let e =
             if want "rec" then
                 Aletrec (loc, dsv "rec" dec, dummy ())
             else
-                let (_, lhs, rhs) = dec ()
+                let (_, lhs, te, rhs) = dec ()
                 in
-                Alet (loc, lhs, rhs, dummy ())
+                Alet (loc, lhs, te, rhs, dummy ())
         in
         if want cont then
-            set_let_body e (_let cont)
+            set_let_body e (lets cont)
         else
             e
 
-    rec dec () = (getloc (), exp (), need "="; exp ())
+    rec dec () = (getloc (), iexp (), dectype (), need "="; exp ())
+
+    rec dectype () =
+        if want "::" then
+            if want "with" then
+                Some (TEscheme (getloc (), seq opt_id, need "in"; ty ()))
+            else
+                Some (ty ())
+        else
+            None
+
 
     rec exp () =
         let e =
             let {loc, type, _} @ tok = next ()
             in
             case type
-            | "let" -> set_let_body (_let "let") (need "in"; exp ())
+            | "let" -> set_let_body (lets "let") (need "in"; exp ())
 
             | "if" ->
                 Aif (loc, exp (), need "then"; exp (), need "else"; exp ())
@@ -347,10 +361,13 @@ let parse (init_md::md) (tokens::[token]) =
                 e
 
             | "exception" ->
-                Aexception (
+                let e = Aexception (
                     loc,
                     (need "id").txt,
                     if want "with" then aexp () else Atuple (loc, []))
+                in
+                want "ende";
+                e
 
             | _ ->
                 unget tok;
@@ -361,7 +378,7 @@ let parse (init_md::md) (tokens::[token]) =
             case next ()
 
             | {type="where", _} ->
-                let e' = want "def"; set_let_body (_let "def") e
+                let e' = want "def"; set_let_body (lets "def") e
                 in
                 want "endw";
                 Some e'
@@ -433,6 +450,7 @@ let parse (init_md::md) (tokens::[token]) =
                 let ps = seq opt_aexp
                 let e = (need "->"; exp ())
                 in
+                want "endf";
                 foldr (\p e -> Afn (loc, p, e)) e ps
             | _ -> error loc "need expression"
         in
@@ -602,6 +620,8 @@ datatype pat =
     | Ptuple (loc, pat list)
     | Precord (loc, (string, pat) list)
     | Popenrecord (loc, (string, pat) list)
+    | Pty (loc, pat, type)
+    | Pas (loc, pat, id)
 
 datatype exp =
     | Cint (loc, int)
@@ -611,13 +631,15 @@ datatype exp =
     | Ccon (loc, id)
     | Ctuple (loc, exp list)
     | Crecord (loc, (id, exp) list)
+    | Cwith (loc, exp, (id, exp) list)
     | Cfn (loc, id, exp)
     | Capp (loc, exp, exp)
     | Ccase (loc, exp, (loc, pat, exp) list)
-    | Clet (loc, id, exp, exp)
-    | Cletrec (loc, (loc, id, exp) list, exp)
+    | Clet (loc, id, type option, exp, exp)
+    | Cletrec (loc, (loc, id, type option, exp) list, exp)
     | Cexcept (loc, exp, (loc, id, pat, exp) list)
     | Cexception (loc, string, exp)
+    | Cty (loc, exp, type)
 
 
 let rec follow t = case t
@@ -632,15 +654,15 @@ let istv t = case t | Typevar _ -> true | Polyvar _ -> true | _ -> false
 let rec ty2str t =
     case follow t
     | Type ([], id) -> id
-    | Type (ts, id) -> join [join_with " and " (map paren ts), " ", id]
+    | Type (ts, id) -> join [joinwith " and " (map paren ts), " ", id]
     | Typevar !(id, _, _) -> id
     | Polyvar !id -> id
     | FnType (lhs, rhs) ->
         join [paren lhs, " -> ", if isfntype rhs then paren rhs else ty2str rhs]
-    | TupType ts -> join ["(", join_with "," (map ty2str ts), ")"]
-    | RecType fs -> join ["{", join_with ", " (map field fs), "}"]
+    | TupType ts -> join ["(", joinwith "," (map ty2str ts), ")"]
+    | RecType fs -> join ["{", joinwith ", " (map field fs), "}"]
     | OpenRecType !([], _) -> "{_}"
-    | OpenRecType !(fs, _) -> join ["{", join_with ", " (map field fs), ", _ }"]
+    | OpenRecType !(fs, _) -> join ["{", joinwith ", " (map field fs), ", _ }"]
     endc
 
     where paren t =
@@ -667,8 +689,8 @@ let rec ty2str t =
 datatype pp =
     | PPB           # break point.
     | PPT string    # text fragment.
-    | PPJ [pp]      # joined fragments; unbreakable.
-    | PPG [pp]      # grouped fragments; break if ill-fitting.
+    | PPJ [pp]      # joined fragments
+    | PPG [pp]      # grouped fragments; indent on break
 
 # Width of pretty-printing page.
 let page_width = 80
@@ -687,24 +709,51 @@ let pretty_print e = fst (output true "\n" page_width (pp e))
         | Cstring (_, s) -> PPT ("\"" ^ escape '"' s ^ "\"")
         | Cvar (_, id) -> PPT id
         | Ccon (_, id) -> PPT id
-        | Ctuple (_, es) -> PPG [PPT "(", csv (map pp es), PPT ")"]
-        | Crecord (_, fs) -> PPG [PPT "{", csv (map ppf fs), PPT "}"]
+        | Ctuple (_, es) -> PPJ [PPT "(", csv (map pp es), PPT ")"]
+        | Crecord (_, fs) -> PPJ [PPT "{", csv (map ppf fs), PPT "}"]
+        | Cwith (_, e, fs) -> PPG [paren e, PPT "with {", csv (map ppf fs), PPT "}"]
         | Cfn (_, id, e) -> PPG [PPT "\\", PPT id, PPT "->", PPB, pp e]
-        | Capp (_, e, Capp _ @ f) -> PPG [pp e, PPB, PPT "(", pp f, PPT ")"]
-        | Capp (_, e, f) -> PPG [pp e, PPB, pp f]
+        | Capp (_, Capp _ @ e, f) -> PPG [pp e, PPB, paren f]
+        | Capp (_, e, f) -> PPG [paren e, PPB, paren f]
         | Ccase (_, e, rs) ->
-            PPG [PPT "case ", pp e, PPB,
+            PPJ [PPT "case ", pp e, PPB,
                 PPT "| ", dsv bar (map ppr rs), PPB,
                 PPT "endc"]
-        | Clet (_, id, v, e) ->
-            PPG [PPG [PPT "let ", PPT id, PPT " =", PPB, pp v], PPB, PPT "in", PPB, pp e]
+        | Clet (_, id, _, v, e) ->
+            PPJ [PPG [PPT "let ", PPT id, PPT " =", PPB, pp v], PPB, PPT "in", PPB, pp e]
         | Cletrec (_, ds, e) ->
             PPJ [PPT "let rec ", dsv _rec (map ppd ds), PPB, PPT "in", PPB, pp e]
         | Cexcept (_, e, rs) ->
-            PPG [pp e, PPB, PPT "except", PPB, dsv bar (map pper rs), PPB, PPT "ende"]
+            PPJ [pp e, PPB, PPT "except", PPB, dsv bar (map pper rs), PPB, PPT "ende"]
         | Cexception (_, id, e) ->
-            PPG [PPT "exception ", PPT id, PPB, PPT "with ", pp e]
-    endc
+            PPJ [PPT "exception ", PPT id, PPB, PPT "with ", pp e]
+        endc
+
+    rec paren p =
+        if needparen p then
+            PPJ [PPT "(", pp p, PPT ")"]
+        else
+            pp p
+
+    rec needparen p =
+        case p
+        | Cint _ -> false
+        | Cchar _ -> false
+        | Cstring _ -> false
+        | Cvar _ -> false
+        | Ccon _ -> false
+        | Ctuple _ -> false
+        | Crecord _ -> false
+        | Cfn _ -> false
+
+        | Cwith _ -> true
+        | Capp _ -> true
+        | Ccase _ -> true
+        | Clet _ -> true
+        | Cletrec _ -> true
+        | Cexcept _ -> true
+        | Cexception _ -> true
+        endc
 
     rec ppp p = case p
         | Pint (_, i) -> PPT (itoa i)
@@ -713,13 +762,15 @@ let pretty_print e = fst (output true "\n" page_width (pp e))
         | Pvar (_, id) -> PPT id
         | Pcon (_, id) -> PPT id
         | Pany _ -> PPT "_"
-        | Papp (_, id, Papp _ @ p) -> PPG [PPT id, PPB, PPT "(", ppp p, PPT ")"]
+        | Papp (_, id, (Papp _) @ p) -> PPG [PPT id, PPB, PPT "(", ppp p, PPT ")"]
         | Papp (_, id, p) -> PPG [PPT id, PPB, ppp p]
         | Ptuple (_, ps) -> PPG [PPT "(", csv (map ppp ps), PPT ")"]
         | Precord (_, fs) -> PPG [PPT "{", csv (map pppf fs), PPT "}"]
         | Popenrecord (_, fs) -> PPG [PPT "{_, ", csv (map pppf fs), PPT "}"]
+        | Pty (_, p, t) -> PPG [PPT "(", ppp p, PPT "::", PPT "QQQ", PPT ")"]
+        | Pas (_, p, id) -> PPG [PPT "(", ppp p, PPT " @ ", PPT id, PPT ")"]
 
-    rec ppd (loc, id, e) = PPJ [PPT id, PPT " =", PPB, pp e]
+    rec ppd (loc, id, _, e) = PPJ [PPT id, PPT " =", PPB, pp e]
     rec ppf (id, e) = PPJ [PPT id, PPT " =", PPB, pp e]
     rec pppf (id, p) = PPJ [PPT id, PPT " =", PPB, ppp p]
     rec ppr (loc, lhs, rhs) = PPJ [ppp lhs, PPT " ->", PPB, pp rhs]
@@ -743,7 +794,7 @@ let pretty_print e = fst (output true "\n" page_width (pp e))
                 (br, page_width - strlen br - 1)
         | PPT s -> (s, remain - strlen s)
         | PPJ ps ->
-            let f = output horiz br
+            let f = output (remain >= sum' width ps) br
             let g (s, r) p = let (s', r') = f r p in (s':s, r')
             in
             onfst (join of rev) (foldl g ([], remain) ps)
@@ -875,8 +926,8 @@ let make_module (md :: md) =
             in
             Ccase (loc, to_core e, [(loc, p, ve)])
 
-        | Awith (loc, _, _) ->
-            error loc "QQQ: WITH EXPRESSION"
+        | Awith (loc, e, fs) ->
+            Cwith (loc, to_core e, map (onsnd (to_core)) fs)
 
         | Aapp (loc, f, x) ->
             Capp (loc, to_core f, to_core x)
@@ -887,17 +938,17 @@ let make_module (md :: md) =
         | Aor (loc, lhs, rhs) ->
             from_if loc (to_core lhs) (Ccon (loc, "true")) (to_core rhs)
 
-        | Alet (loc, lhs, rhs, body) ->
-            case to_dec loc lhs rhs
-            | Some (loc, id, val) -> Clet (loc, id, val, to_core body)
+        | Alet (loc, lhs, te, rhs, body) ->
+            case to_dec loc lhs te rhs
+            | Some (loc, id, t, val) -> Clet (loc, id, t, val, to_core body)
             | None -> Ccase (loc, to_core rhs, [(loc, to_pat lhs, to_core body)])
             endc
 
         | Aletrec (loc, ds, e) ->
-            let ds' = map (\(loc, lhs, rhs)-> to_dec loc lhs rhs) ds
+            let ds' = map (\(loc, lhs, te, rhs)-> to_dec loc lhs te rhs) ds
             let check d =
                 case d
-                | (Some ((loc, id, rhs) @ dec)) ->
+                | (Some ((loc, id, t, rhs) @ dec)) ->
                     if isfn rhs then
                         dec
                     else
@@ -914,11 +965,9 @@ let make_module (md :: md) =
             in
             Ccase (loc, to_core e, rs')
 
-        | Aty (loc, _, _) ->
-            error loc "QQQ: TYPE EXPRESSIONS"
+        | Aty (loc, e, te) -> Cty (loc, to_core e, to_type te)
 
-        | Aseq (loc, e, f) ->
-            Ccase (loc, to_core e, [(loc, Pany loc, to_core f)])
+        | Aseq (loc, e, f) -> Ccase (loc, to_core e, [(loc, Pany loc, to_core f)])
 
         | Aexception (loc, id, e) -> Cexception (loc, id, to_core e)
 
@@ -930,15 +979,17 @@ let make_module (md :: md) =
 
         endc
 
-    rec to_dec loc lhs rhs =
+    rec to_dec loc lhs te rhs =
+        let t = mapopt to_type te
+        in
         case getvar lhs
 
-        | Some id -> Some (loc, id, to_core rhs)
+        | Some id -> Some (loc, id, t, to_core rhs)
 
         | None ->
             case app2dec lhs
             | Some (id, ps) ->
-                Some (loc, id, to_core (foldr (\p e-> Afn (loc, p, e)) rhs ps))
+                Some (loc, id, t, to_core (foldr (\p e-> Afn (loc, p, e)) rhs ps))
             | None -> None
             endc
 
@@ -977,6 +1028,12 @@ let make_module (md :: md) =
 
         | Ader (loc, p) -> Papp (loc, "ref", to_pat p)
 
+        | Aapp (loc, Aapp(_, Aid (_, "@"), lhs), Aid (_, id)) ->
+            Pas (loc, to_pat lhs, id)
+
+        | Aapp (loc, Aapp(_, Aid (_, "@"), _), _) ->
+            error loc "r.h.s. of @ must be identifier"
+
         | Aapp (loc, f, x) ->
             case getvar f
             | Some id ->
@@ -987,6 +1044,10 @@ let make_module (md :: md) =
             | _ -> invalid_pat ast
             endc
 
+        | Aty (loc, p, te) -> Pty (loc, to_pat p, to_type te)
+
+
+        | Afn _ -> invalid_pat ast
         | Adot _ -> invalid_pat ast
         | Awith _ -> invalid_pat ast
         | Aand _ -> invalid_pat ast
@@ -995,7 +1056,6 @@ let make_module (md :: md) =
         | Aletrec _ -> invalid_pat ast
         | Aif _ -> invalid_pat ast
         | Acase _ -> invalid_pat ast
-        | Aty _ -> invalid_pat ast
         | Aseq _ -> invalid_pat ast
         | Aexception _ -> invalid_pat ast
         | Aexcept _ -> invalid_pat ast
@@ -1039,12 +1099,24 @@ let make_module (md :: md) =
 
             case dups (map fst fs'')
             | [] -> ()
-            | dups -> error loc ("duplicate fields: " ^ join_with ", " dups)
+            | dups -> error loc ("duplicate fields: " ^ joinwith ", " dups)
             endc;
 
             RecType fs''
 
         | TEfn (loc, lhs, rhs) -> FnType (to_type lhs, to_type rhs)
+
+        | TEscheme (loc, tv_ids, te) ->
+            let tvs = map (Polyvar of ref) tv_ids
+            let old_types = !types
+            let _ = types := zip tv_ids tvs ++ !types
+            let type = to_type te
+            let _  = types := old_types
+            in
+            type
+
+        endc
+
 
     rec genpair loc = let id = gensym () in (Pvar (loc, id), Cvar (loc, id))
 
@@ -1158,6 +1230,4 @@ let init_md = {
     body = Atuple ("", []),
 }
 
-let main =
-    tokenise path src & parse init_md & make_module & print;
-    print "done!"
+let main = tokenise path src & parse init_md & make_module & print

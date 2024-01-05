@@ -17,13 +17,15 @@ excndec ::= 'exception' <id> ['with' <ty>]
 let ::= ('let' <dec>)+
 
 dec ::=
-    <pat> '=' <exp>
-    ('rec' <pat> '=' <exp>)+
+    <cexp> [dectype] '=' <exp>
+    ('rec' <cexp> [dectype] '=' <exp>)+
+
+dectype ::= '::' ['with' <id>* 'in'] <ty>
 
 exp ::=
     <let> 'in' <exp>
     'if' <exp> 'then' <exp> 'else' <exp>
-    'case' <exp> ('|' <pat> '->' <exp>)* ['endc']
+    'case' <exp> ('|' <cexp> '->' <exp>)* ['endc']
     'exception' ['with' <aexp>]
     <iexp>
     <exp> '::' <ty>
@@ -42,7 +44,7 @@ aexp ::=
     '[' {<exp>} ']'
     <rec>
     '!' <aexp>
-    '\' <apat>+ '->' <exp>
+    '\' <apat>+ '->' <exp> ['endf']
     <aexp> '.' <id>
     <aexp> 'with' <rec>
 
@@ -94,8 +96,8 @@ char ::= /'(\.|[^'])'/
 
 reserved:
     -> :: = |
-    and case datatype def else endc ende endw except exception
-    if in infixl infixr let or rec then with where
+    and case datatype def else endc ende endf endw except
+    exception if in infixl infixr let or rec then with where
 
 punctuation:
     ! ( ) [ ] { } , . ; \ `
